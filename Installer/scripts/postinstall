@@ -1,0 +1,33 @@
+#!/bin/bash
+APP="/Applications/KonnectMac.app"
+BUNDLE_ID="com.konnectmac.app"
+
+# Resolve the REAL logged-in user (not root, which runs postinstall)
+REAL_USER=$(stat -f "%Su" /dev/console)
+REAL_HOME=$(dscl . -read /Users/"$REAL_USER" NFSHomeDirectory | awk '{print $2}')
+
+# Register with LaunchServices
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" 2>/dev/null
+
+# Clear notification icon cache
+killall NotificationCenter 2>/dev/null
+
+# Fix app ownership to real user
+chown -R "$REAL_USER" "$APP" 2>/dev/null
+
+# Create app data directories as the real user
+APP_SUPPORT="$REAL_HOME/Library/Application Support/KonnectMac"
+CACHE_DIR="$REAL_HOME/Library/Caches/KonnectMac"
+
+su "$REAL_USER" -c "mkdir -p '$APP_SUPPORT/PairedDevices'"
+su "$REAL_USER" -c "mkdir -p '$CACHE_DIR/AppIcons'"
+
+# Reset onboarding if no identity exists (fresh install)
+if [ ! -f "$APP_SUPPORT/identity.p12" ]; then
+    su "$REAL_USER" -c "defaults delete '$BUNDLE_ID' hasCompletedOnboarding 2>/dev/null"
+fi
+
+# Refresh Services menu so "Send to Phone via KonnectMac" appears immediately
+/System/Library/CoreServices/pbs -update 2>/dev/null
+
+exit 0
