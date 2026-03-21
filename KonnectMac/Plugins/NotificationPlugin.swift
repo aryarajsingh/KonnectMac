@@ -170,9 +170,9 @@ class NotificationPlugin: PluginProtocol {
             } else if isMissedOrHistory {
                 // Post-call notification from dialer — NOT an active call.
                 // Let it fall through to normal notification display.
-                KLog.log("[Notification] Dialer history notification (not active call): \(title.prefix(20))...")
+                KLog.log("[Notification] Dialer history notification (not active call)")
             } else {
-                KLog.log("[Notification] Call UI appeared: \(title.prefix(20))...")
+                KLog.log("[Notification] Call UI appeared")
                 if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
                     telephony.onCallStarted(caller: title.isEmpty ? text : title)
                 }
@@ -194,7 +194,7 @@ class NotificationPlugin: PluginProtocol {
             if isCallNotif {
                 // Extract caller name: usually in title (e.g., "John Smith") or text
                 let caller = title.isEmpty ? text : title
-                KLog.log("[Notification] VoIP call detected from \(packageName): caller=\(caller.prefix(20))...")
+                KLog.log("[Notification] VoIP call detected from \(packageName)")
                 if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
                     telephony.onCallStarted(caller: caller)
                 }

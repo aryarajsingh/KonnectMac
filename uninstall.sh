@@ -21,8 +21,7 @@ defaults delete com.konnectmac.app 2>/dev/null
 # Reset notification registration
 killall usernoted 2>/dev/null
 
-# Remove log
-rm -f /tmp/konnectmac.log
+# Logs are in ~/Library/Application Support/KonnectMac/ (removed above)
 
 echo "KonnectMac has been uninstalled."
 echo "Note: Notification and Login Item entries in System Settings may take a restart to disappear."
