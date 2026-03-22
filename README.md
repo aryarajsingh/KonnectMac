@@ -19,6 +19,9 @@
 
 ---
 
+<!-- Add hero GIF here once recorded -->
+<!-- <p align="center"><img src="assets/demo.gif" width="720" alt="KonnectMac Demo"></p> -->
+
 ## What is KonnectMac?
 
 KonnectMac is a **native macOS menu bar app** that connects your Android phone to your Mac using the [KDE Connect](https://kdeconnect.kde.org/) protocol. It works with the official KDE Connect Android app (v1.34+) available on [Google Play](https://play.google.com/store/apps/details?id=org.kde.kdeconnect_tp) and [F-Droid](https://f-droid.org/packages/org.kde.kdeconnect_tp/).
