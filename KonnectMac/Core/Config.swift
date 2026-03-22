@@ -177,34 +177,66 @@ class Config: ObservableObject {
         return pairingDirectory() + "/\(safeId).der"
     }
 
+    private static let launchAgentPath: String = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return home + "/Library/LaunchAgents/com.konnectmac.app.plist"
+    }()
+
     private func updateLoginItem() {
         if autoStart {
-            do {
-                try SMAppService.mainApp.register()
-                KLog.log("[Config] Login item registered. Status: \(SMAppService.mainApp.status.rawValue)")
-            } catch {
-                KLog.log("[Config] Failed to register login item: \(error)")
-                self.autoStart = false
-            }
+            installLaunchAgent()
         } else {
-            do {
-                try SMAppService.mainApp.unregister()
-                KLog.log("[Config] Login item unregistered")
-            } catch {
-                KLog.log("[Config] Failed to unregister login item: \(error)")
-            }
+            removeLaunchAgent()
         }
         UserDefaults.standard.set(autoStart, forKey: "autoStart")
     }
 
-    /// Check actual system status on launch and sync
+    private func installLaunchAgent() {
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>com.konnectmac.app</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>/Applications/KonnectMac.app/Contents/MacOS/KonnectMac</string>
+            </array>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <false/>
+        </dict>
+        </plist>
+        """
+
+        let dir = (FileManager.default.homeDirectoryForCurrentUser.path) + "/Library/LaunchAgents"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+
+        do {
+            try plist.write(toFile: Config.launchAgentPath, atomically: true, encoding: .utf8)
+            KLog.log("[Config] LaunchAgent installed at \(Config.launchAgentPath)")
+        } catch {
+            KLog.log("[Config] Failed to install LaunchAgent: \(error)")
+            self.autoStart = false
+        }
+    }
+
+    private func removeLaunchAgent() {
+        try? FileManager.default.removeItem(atPath: Config.launchAgentPath)
+        KLog.log("[Config] LaunchAgent removed")
+    }
+
+    /// Sync login item state on launch
     func syncLoginItemStatus() {
-        let status = SMAppService.mainApp.status
-        let registered = (status == .enabled)
-        if autoStart != registered {
-            KLog.log("[Config] Login item mismatch: saved=\(autoStart) actual=\(registered). Syncing.")
-            autoStart = registered
-            UserDefaults.standard.set(autoStart, forKey: "autoStart")
+        let agentExists = FileManager.default.fileExists(atPath: Config.launchAgentPath)
+        if autoStart && !agentExists {
+            KLog.log("[Config] LaunchAgent missing but autoStart=true. Reinstalling.")
+            installLaunchAgent()
+        } else if !autoStart && agentExists {
+            KLog.log("[Config] LaunchAgent exists but autoStart=false. Removing.")
+            removeLaunchAgent()
         }
     }
 }
