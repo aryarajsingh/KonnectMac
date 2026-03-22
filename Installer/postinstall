@@ -1,0 +1,9 @@
+#!/bin/bash
+APP="/Applications/KonnectMac.app"
+USER_HOME=$(eval echo ~$USER)
+SUPPORT="$USER_HOME/Library/Application Support/KonnectMac"
+mkdir -p "$SUPPORT/PairedDevices"
+chown -R "$USER" "$SUPPORT"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" 2>/dev/null
+killall lsd 2>/dev/null
+exit 0

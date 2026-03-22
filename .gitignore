@@ -1,0 +1,37 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserdata/
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xccheckout
+*.moved-aside
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# App data (never commit user data)
+*.p12
+*.keychain
+*.keychain-db
+*.lock
+
+# Installer payload (built artifacts, not source)
+Installer/payload/
+
+# Logs
+*.log
+
+# Temporary files
+*.partial
+*.tmp
+# Internal dev notes
+*.notes.md
+.dev/
