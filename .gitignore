@@ -35,3 +35,5 @@ Installer/payload/
 # Internal dev notes
 *.notes.md
 .dev/
+CLAUDE.md
+.claude/
