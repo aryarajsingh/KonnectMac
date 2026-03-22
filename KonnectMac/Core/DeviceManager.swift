@@ -18,6 +18,7 @@ class DeviceManager: ObservableObject {
     private var broadcastTimer: Timer?
     private var networkMonitor: NWPathMonitor?
     private var sleepWakeObserver: NSObjectProtocol?
+    private var networkDebounceTask: Task<Void, Never>?
 
     private init() {}
 
@@ -53,15 +54,21 @@ class DeviceManager: ObservableObject {
                 let hasWiFi = path.availableInterfaces.contains { $0.type == .wifi }
                 KLog.log("[Network] Path changed — status=\(path.status), wifi=\(hasWiFi)")
 
-                if !hasWiFi {
-                    // WiFi dropped — kill connections on WiFi IPs immediately
-                    // instead of waiting 2+ min for TCP keepalive.
-                    // This enables fast Tailscale failover.
-                    self.disconnectNonReachableConnections()
-                }
+                // Debounce: cancel any pending network reaction, wait 2s for stability.
+                // macOS fires rapid bursts of path changes during WiFi switches —
+                // without debouncing, each triggers reconnection attempts that cascade-fail.
+                self.networkDebounceTask?.cancel()
+                self.networkDebounceTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                    guard !Task.isCancelled else { return }
 
-                if path.status == .satisfied {
-                    self.broadcastIdentity()
+                    if !hasWiFi {
+                        self.disconnectNonReachableConnections()
+                    }
+
+                    if path.status == .satisfied {
+                        self.broadcastIdentity()
+                    }
                 }
             }
         }
