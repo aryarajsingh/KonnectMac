@@ -412,6 +412,26 @@ struct AboutTab: View {
                     .foregroundColor(.secondary)
                     .padding(.top, 4)
             }
+
+            Divider().frame(width: 200)
+
+            HStack(spacing: 16) {
+                Button(action: {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/aryarajsingh/KonnectMac")!)
+                }) {
+                    Label("GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                .buttonStyle(.link)
+
+                Button(action: {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/sponsors/aryarajsingh")!)
+                }) {
+                    Label("Sponsor", systemImage: "heart.fill")
+                }
+                .buttonStyle(.link)
+                .foregroundColor(.pink)
+            }
+            .font(.system(size: 12))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
