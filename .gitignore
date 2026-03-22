@@ -32,3 +32,4 @@ Installer/payload/
 # Temporary files
 *.partial
 *.tmp
+CLAUDE.md
