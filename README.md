@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/Swift-5.9-orange?logo=swift" alt="Swift 5.9">
   <img src="https://img.shields.io/badge/KDE%20Connect-Protocol%20v7-green" alt="Protocol v7">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="Zero Dependencies">
+  <img src="https://img.shields.io/badge/license-GPL%20v3-blue" alt="GPL v3">
 </p>
 
 ---
@@ -147,7 +148,11 @@ KonnectMac/
 
 ## License
 
-Copyright (c) 2026 Aryaraj Singh. All rights reserved.
+KonnectMac is open source under the [GNU General Public License v3.0](LICENSE).
+
+You are free to view, modify, and build from source. Pre-built signed releases are available for purchase on the Mac App Store.
+
+Copyright © 2026 Aryaraj Singh.
 
 ---
 
