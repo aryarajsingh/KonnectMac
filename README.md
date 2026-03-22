@@ -29,7 +29,7 @@ No Electron. No web views. No third-party dependencies. Pure Swift + AppKit + Sw
 
 | Feature | Description |
 |---------|-------------|
-| **Notification Mirroring** | See your phone notifications on your Mac with app icons, OTP auto-detection, and reply support |
+| **Notification Mirroring** | See your phone notifications on your Mac with app icons and OTP auto-detection with one-tap copy |
 | **Call Alerts** | Incoming/outgoing call notifications with automatic media pause and resume |
 | **Clipboard Sync** | Bidirectional clipboard sharing between Mac and phone |
 | **File Transfer** | Send and receive files over encrypted TLS — drag to menu bar icon or use right-click Services menu |
@@ -77,7 +77,7 @@ xcodebuild -project KonnectMac.xcodeproj -scheme KonnectMac -configuration Relea
 
 ### OTP/SMS Visibility (Android 15+)
 
-Android 15 hides sensitive notification content from third-party apps. To see OTP codes:
+Android 15 hides sensitive notification content from third-party apps. The onboarding wizard covers this, but you can also fix it manually:
 
 ```bash
 # Install ADB tools
@@ -93,7 +93,8 @@ adb shell appops set org.kde.kdeconnect_tp RECEIVE_SENSITIVE_NOTIFICATIONS allow
 KonnectMac/
 ├── KonnectMacApp.swift          — App entry, menu bar, onboarding
 ├── OnboardingView.swift         — First-launch setup wizard
-├── PreferencesView.swift        — Settings: General, Devices, Plugins, About
+├── PreferencesView.swift        — Settings: General, Devices, About
+├── MenuBarView.swift            — Menu bar popover UI
 ├── Core/
 │   ├── NetworkPacket.swift      — JSON packet serialization
 │   ├── Config.swift             — UserDefaults, capabilities, identity
@@ -106,7 +107,10 @@ KonnectMac/
 │   ├── LanServer.swift          — BSD socket TCP server
 │   ├── KDEConnection.swift      — Full TLS connection lifecycle
 │   └── VerificationKeyHelper.swift — SHA256 pairing verification
+├── Pairing/
+│   └── PairingHandler.swift     — Pairing state machine & verification
 └── Plugins/
+    ├── PluginProtocol.swift     — Plugin interface
     ├── PingPlugin.swift         — Bidirectional ping
     ├── BatteryPlugin.swift      — Battery level & alerts
     ├── NotificationPlugin.swift — Notification mirroring & OTP detection
@@ -147,7 +151,7 @@ KonnectMac/
 
 KonnectMac is open source under the [GNU General Public License v3.0](LICENSE).
 
-You are free to view, modify, and build from source. Pre-built signed releases are available for purchase on the Mac App Store.
+You are free to view, modify, and build from source.
 
 Copyright © 2026 Aryaraj Singh.
 
