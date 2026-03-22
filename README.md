@@ -56,9 +56,6 @@ Mac                              Phone
 
 ## Installation
 
-### Download
-Get the latest `.pkg` from [Releases](https://github.com/aryarajsingh/KonnectMac/releases).
-
 ### Build from Source
 ```bash
 git clone https://github.com/aryarajsingh/KonnectMac.git
