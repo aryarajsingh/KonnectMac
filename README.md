@@ -147,6 +147,16 @@ KonnectMac/
 | `beta` | Testing builds |
 | `alpha` | Active development |
 
+## Support
+
+If KonnectMac is useful to you, consider supporting development:
+
+<p>
+  <a href="https://github.com/sponsors/aryarajsingh"><img src="https://img.shields.io/badge/GitHub%20Sponsors-♥-ea4aaa?logo=github" alt="GitHub Sponsors"></a>
+  <a href="https://buymeacoffee.com/aryarajsingh"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-☕-yellow?logo=buymeacoffee" alt="Buy Me a Coffee"></a>
+  <a href="https://ko-fi.com/aryarajsingh"><img src="https://img.shields.io/badge/Ko--fi-❤-red?logo=kofi" alt="Ko-fi"></a>
+</p>
+
 ## License
 
 KonnectMac is open source under the [GNU General Public License v3.0](LICENSE).
