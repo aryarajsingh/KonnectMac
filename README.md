@@ -30,9 +30,9 @@ No Electron. No web views. No third-party dependencies. Pure Swift + AppKit + Sw
 
 ## Download
 
-📦 **[Download KonnectMac v1.0-alpha](https://github.com/aryarajsingh/KonnectMac/releases/latest)** (.pkg installer)
+📦 **[Download KonnectMac](https://github.com/aryarajsingh/KonnectMac/releases/latest)** (.pkg installer)
 
-> **Note:** This is an early alpha release. The app is not code-signed, so macOS may show an "unidentified developer" warning. Right-click the app → Open to bypass.
+> **Note:** The app is not code-signed yet, so macOS may show an "unidentified developer" warning. Right-click the app → Open to bypass.
 
 ## Features
 
