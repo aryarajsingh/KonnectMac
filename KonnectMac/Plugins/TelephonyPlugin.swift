@@ -48,14 +48,19 @@ class TelephonyPlugin: PluginProtocol {
         KLog.log("[Telephony] Event: \(event), isCancel: \(isCancel)")
 
         if isCancel {
+            let hadActiveCall = currentCallId != nil
             callTimeoutTask?.cancel()
             callTimeoutTask = nil
             resumeMediaIfNeeded()
             currentCallId = nil
             callStartTime = nil
-            callEndedTime = Date()
+            if hadActiveCall {
+                callEndedTime = Date()
+                KLog.log("[Telephony] Call cancelled via telephony packet, cooldown active for 5s")
+            } else {
+                KLog.log("[Telephony] isCancel with no active call — ignoring (no cooldown)")
+            }
             dismissCallNotification()
-            KLog.log("[Telephony] Call cancelled via telephony packet, cooldown active for 5s")
             return
         }
 
@@ -88,8 +93,8 @@ class TelephonyPlugin: PluginProtocol {
                 showCallNotification(title: "On Call", body: name, isMissed: false)
                 startCallTimeout()
             } else {
-                // Call answered (was ringing) — update notification title
-                showCallNotification(title: "On Call", body: name, isMissed: false)
+                // Duplicate "talking" while already on call — ignore
+                KLog.log("[Telephony] Duplicate 'talking' ignored (already in call)")
             }
         default:
             break
