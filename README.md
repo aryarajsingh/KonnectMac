@@ -150,16 +150,21 @@ KonnectMac/
 | `beta` | Testing builds |
 | `alpha` | Active development |
 
-## Support
+## Download
 
-If KonnectMac is useful to you, consider [sponsoring development](https://github.com/sponsors/aryarajsingh).
+📦 **[Download KonnectMac v1.0-alpha](https://github.com/aryarajsingh/KonnectMac/releases/latest)** (.pkg installer)
 
-<a href="https://github.com/sponsors/aryarajsingh"><img src="https://img.shields.io/badge/Sponsor-♥-ea4aaa?logo=github" alt="Sponsor"></a>
+> **Note:** This is an early alpha. The app is not code-signed, so macOS may show an "unidentified developer" warning. Right-click → Open to bypass.
+
+## Support Me
+
+I built this in my free time because I wanted a proper Mac + Android experience. If KonnectMac is useful to you, a small sponsorship means a lot — it keeps development going.
+
+<a href="https://github.com/sponsors/aryarajsingh"><img src="https://img.shields.io/badge/Sponsor-♥_Support_Me-ea4aaa?style=for-the-badge&logo=github" alt="Sponsor"></a>
 
 ## License
 
 KonnectMac is open source under the [GNU General Public License v3.0](LICENSE).
-
 You are free to view, modify, and build from source.
 
 Copyright © 2026 Aryaraj Singh.
