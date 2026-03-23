@@ -146,6 +146,17 @@ class Config: ObservableObject {
         UserDefaults.standard.set(types, forKey: "pairedDeviceTypes")
     }
 
+    func saveDeviceIP(_ ip: String, for id: String) {
+        var ips = UserDefaults.standard.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
+        ips[id] = ip
+        UserDefaults.standard.set(ips, forKey: "pairedDeviceIPs")
+    }
+
+    func savedDeviceIP(for id: String) -> String? {
+        let ips = UserDefaults.standard.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
+        return ips[id]
+    }
+
     func enabledPlugins(for deviceId: String) -> Set<String> {
         let key = "enabledPlugins_\(deviceId)"
         if let arr = UserDefaults.standard.array(forKey: key) as? [String] {
