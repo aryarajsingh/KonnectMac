@@ -8,7 +8,8 @@ class TelephonyPlugin: PluginProtocol {
     let device: Device
     private var wasPlayingMedia = false
     private var mediaPausedByUs = false
-    private var currentCallId: String?
+    private var currentCallId: String?      // For async pause race guard
+    private var activeCallCount = 0          // Track concurrent calls (call waiting)
     private var callStartTime: Date?
     private var callTimeoutTask: Task<Void, Never>?
     private var callEndedTime: Date?
@@ -22,7 +23,7 @@ class TelephonyPlugin: PluginProtocol {
         loadMediaRemote()
     }
 
-    var hasActiveCall: Bool { currentCallId != nil }
+    var hasActiveCall: Bool { activeCallCount > 0 }
 
     // VoIP caller name resolution:
     // Telephony packets for VoIP calls often have no contactName.
@@ -38,6 +39,7 @@ class TelephonyPlugin: PluginProtocol {
         mediaPausedByUs = false
         wasPlayingMedia = false
         currentCallId = nil
+        activeCallCount = 0
         callStartTime = nil
         callEndedTime = nil
         callerUnknown = false
@@ -56,19 +58,28 @@ class TelephonyPlugin: PluginProtocol {
         KLog.log("[Telephony] Event: \(event), isCancel: \(isCancel)")
 
         if isCancel {
-            let hadActiveCall = currentCallId != nil
+            let hadActiveCall = activeCallCount > 0
+            if hadActiveCall {
+                activeCallCount = max(0, activeCallCount - 1)
+            }
             callTimeoutTask?.cancel()
             callTimeoutTask = nil
-            resumeMediaIfNeeded()
-            currentCallId = nil
-            callStartTime = nil
             callerUnknown = false
             pendingVoIPCaller = nil
-            if hadActiveCall {
-                callEndedTime = Date()
-                KLog.log("[Telephony] Call cancelled via telephony packet, cooldown active for 5s")
+
+            if activeCallCount == 0 {
+                // Last call ended — safe to resume media
+                resumeMediaIfNeeded()
+                currentCallId = nil
+                callStartTime = nil
+                if hadActiveCall {
+                    callEndedTime = Date()
+                    KLog.log("[Telephony] Last call ended (isCancel), cooldown active for 5s")
+                } else {
+                    KLog.log("[Telephony] isCancel with no active call — ignoring (no cooldown)")
+                }
             } else {
-                KLog.log("[Telephony] isCancel with no active call — ignoring (no cooldown)")
+                KLog.log("[Telephony] Call ended but \(activeCallCount) call(s) still active — media stays paused")
             }
             dismissCallNotification()
             return
@@ -77,17 +88,16 @@ class TelephonyPlugin: PluginProtocol {
         switch event {
         case "ringing":
             // ringing is AUTHORITATIVE — the phone only sends it for new incoming calls.
-            // If we think we're already in a call, the previous end event was missed.
-            if currentCallId != nil {
-                KLog.log("[Telephony] New ringing while in call — previous end event missed, replacing")
-                resumeMediaIfNeeded()
+            if activeCallCount > 0 {
+                // Call waiting — new call while already in a call.
+                // DON'T resume media — it should stay paused.
+                KLog.log("[Telephony] New ringing during active call (call waiting), \(activeCallCount) active")
                 dismissCallNotification()
             }
+            activeCallCount += 1
             currentCallId = UUID().uuidString
 
-            // VoIP caller name resolution:
-            // Telephony packets for VoIP calls have no contactName ("Unknown").
-            // Check if NotificationPlugin already buffered the caller name from the VoIP app's notification.
+            // VoIP caller name resolution
             var displayName = name
             if displayName == "Unknown", let pending = pendingVoIPCaller,
                Date().timeIntervalSince(pending.time) < 5 {
@@ -99,33 +109,39 @@ class TelephonyPlugin: PluginProtocol {
                 callerUnknown = (displayName == "Unknown")
             }
 
-            pauseMediaPlayback()
+            // Only pause if this is the first call (not already paused)
+            if !mediaPausedByUs {
+                pauseMediaPlayback()
+            }
             showCallNotification(title: "Incoming Call", body: displayName, isMissed: false)
             startCallTimeout()
         case "missedCall":
             callTimeoutTask?.cancel()
             callTimeoutTask = nil
-            resumeMediaIfNeeded()
-            currentCallId = nil
-            callStartTime = nil
-            callEndedTime = Date()
+            activeCallCount = max(0, activeCallCount - 1)
             callerUnknown = false
             pendingVoIPCaller = nil
             dismissCallNotification()
             showCallNotification(title: "Missed Call", body: name, isMissed: true)
+
+            if activeCallCount == 0 {
+                resumeMediaIfNeeded()
+                currentCallId = nil
+                callStartTime = nil
+                callEndedTime = Date()
+            } else {
+                KLog.log("[Telephony] Missed call but \(activeCallCount) call(s) still active — media stays paused")
+            }
         case "talking":
-            if currentCallId == nil {
+            if activeCallCount == 0 {
                 // "talking" without prior "ringing" = outgoing call OR stale event.
-                // Samsung sends stale "talking" events after calls end.
-                // Use cooldown to distinguish: if a call ended within 5s, it's stale.
-                // Otherwise it's a real outgoing call.
                 if let ended = callEndedTime, Date().timeIntervalSince(ended) < 5 {
                     KLog.log("[Telephony] Ignoring 'talking' within \(Int(Date().timeIntervalSince(ended)))s of call end (stale)")
                 } else {
-                    // Real outgoing call — no prior ringing, no recent call end
+                    // Real outgoing call
+                    activeCallCount += 1
                     currentCallId = UUID().uuidString
 
-                    // Check VoIP buffer for outgoing calls too
                     var displayName = name
                     if displayName == "Unknown", let pending = pendingVoIPCaller,
                        Date().timeIntervalSince(pending.time) < 5 {
@@ -142,7 +158,7 @@ class TelephonyPlugin: PluginProtocol {
                     startCallTimeout()
                 }
             } else {
-                KLog.log("[Telephony] Duplicate 'talking' ignored (already in call)")
+                KLog.log("[Telephony] Duplicate 'talking' ignored (activeCallCount=\(activeCallCount))")
             }
         default:
             break
@@ -182,21 +198,28 @@ class TelephonyPlugin: PluginProtocol {
     }
 
     func onCallEnded() {
-        let hadActiveCall = currentCallId != nil
+        let hadActiveCall = activeCallCount > 0
+        if hadActiveCall {
+            activeCallCount = max(0, activeCallCount - 1)
+        }
         callTimeoutTask?.cancel()
         callTimeoutTask = nil
-        resumeMediaIfNeeded()
-        currentCallId = nil
-        callStartTime = nil
         callerUnknown = false
         pendingVoIPCaller = nil
-        // Only set cooldown if there was an actual active call — spurious dialer
-        // cancel events (before any ringing/talking) should NOT block future calls
-        if hadActiveCall {
-            callEndedTime = Date()
-            KLog.log("[Telephony] Call ended, cooldown active for 5s")
+
+        if activeCallCount == 0 {
+            // Last call ended — safe to resume
+            resumeMediaIfNeeded()
+            currentCallId = nil
+            callStartTime = nil
+            if hadActiveCall {
+                callEndedTime = Date()
+                KLog.log("[Telephony] Last call ended, cooldown active for 5s")
+            } else {
+                KLog.log("[Telephony] onCallEnded with no active call — ignoring (no cooldown)")
+            }
         } else {
-            KLog.log("[Telephony] onCallEnded with no active call — ignoring (no cooldown)")
+            KLog.log("[Telephony] Call ended but \(activeCallCount) call(s) still active — media stays paused")
         }
         dismissCallNotification()
     }
