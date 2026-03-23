@@ -227,12 +227,11 @@ private struct DiscoveredDeviceRow: View {
             .contentShape(Rectangle())
             .onHover { hovered = $0 }
             .onTapGesture {
-                if isPairing {
-                    // Cancel the stuck pairing request
-                    DeviceManager.shared.cancelPairing(deviceId: device.id)
-                } else {
+                if !isPairing {
                     DeviceManager.shared.requestPairing(deviceId: device.id)
                 }
+                // During pairing, tap does nothing — prevents accidental cancellation.
+                // User can cancel via the explicit Cancel button shown below the verification key.
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Pair with \(device.name)")
@@ -250,9 +249,20 @@ private struct DiscoveredDeviceRow: View {
                         }
                         .foregroundColor(.orange)
                     }
-                    Text("Accept on phone · Tap to cancel")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                    HStack(spacing: 4) {
+                        Text("Accept on phone")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                        Text("·")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                        Text("Cancel")
+                            .font(.system(size: 10))
+                            .foregroundColor(.red.opacity(0.7))
+                            .onTapGesture {
+                                DeviceManager.shared.cancelPairing(deviceId: device.id)
+                            }
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 4)
