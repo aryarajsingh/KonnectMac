@@ -186,6 +186,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         if let button = statusItem?.button {
             let img = NSImage(systemSymbolName: "antenna.radiowaves.left.and.right.slash", accessibilityDescription: "KonnectMac")
+            img?.isTemplate = true
             button.image = img
             button.target = self
             button.action = #selector(togglePopover)
@@ -224,6 +225,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             ? "antenna.radiowaves.left.and.right"
             : "antenna.radiowaves.left.and.right.slash"
         let img = NSImage(systemSymbolName: iconName, accessibilityDescription: "KonnectMac")
+        img?.isTemplate = true
         button.image = img
         KLog.log("[MenuBar] Icon updated: \(iconName), image=\(img != nil), buttonHidden=\(button.isHidden), frame=\(button.frame)")
     }
