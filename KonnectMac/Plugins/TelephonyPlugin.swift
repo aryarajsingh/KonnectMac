@@ -344,13 +344,46 @@ class TelephonyPlugin: PluginProtocol {
         }
 
         // Async MediaRemote check — is a MEDIA PLAYER specifically playing?
-        // This ignores system sounds, browser audio, notification chimes.
+        // Three outcomes:
+        //   1. MediaRemote has info + playbackRate > 0 → media app playing → pause
+        //   2. MediaRemote has info + playbackRate = 0 → media app paused → don't pause
+        //   3. MediaRemote has NO info (empty dict) → no registered Now Playing app
+        //      (e.g. YouTube in browser) → fall back to CoreAudio
         getInfo(DispatchQueue.global()) { [weak self] info in
             let isPlaying: Bool
-            if let rate = info["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? Double {
+            let hasNowPlayingApp = !info.isEmpty
+
+            if hasNowPlayingApp {
+                // A media app IS registered — trust MediaRemote's playback state
+                let rate = info["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? Double ?? 0
                 isPlaying = rate > 0
             } else {
-                isPlaying = false
+                // No registered Now Playing app — browser audio, web player, etc.
+                // Fall back to CoreAudio (synchronous, catches all audio output)
+                // This is safe to call from background queue
+                var defaultDevice = AudioDeviceID(0)
+                var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+                var address = AudioObjectPropertyAddress(
+                    mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain
+                )
+                let st = AudioObjectGetPropertyData(
+                    AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &defaultDevice
+                )
+                if st == noErr, defaultDevice != 0 {
+                    var isRunning: UInt32 = 0
+                    var runningSize = UInt32(MemoryLayout<UInt32>.size)
+                    var runningAddress = AudioObjectPropertyAddress(
+                        mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+                        mScope: kAudioObjectPropertyScopeGlobal,
+                        mElement: kAudioObjectPropertyElementMain
+                    )
+                    AudioObjectGetPropertyData(defaultDevice, &runningAddress, 0, nil, &runningSize, &isRunning)
+                    isPlaying = isRunning > 0
+                } else {
+                    isPlaying = false
+                }
             }
 
             Task { @MainActor in
@@ -366,9 +399,13 @@ class TelephonyPlugin: PluginProtocol {
 
                 if isPlaying, let send = self.mrSendCommand {
                     let _ = send(1, nil) // MRMediaRemoteCommandPause = 1
-                    KLog.log("[Telephony] Paused media (MediaRemote confirmed playbackRate > 0)")
+                    if hasNowPlayingApp {
+                        KLog.log("[Telephony] Paused media (MediaRemote: playbackRate > 0)")
+                    } else {
+                        KLog.log("[Telephony] Paused media (CoreAudio fallback: browser/web audio)")
+                    }
                 } else {
-                    KLog.log("[Telephony] No media player active (MediaRemote), skipping pause")
+                    KLog.log("[Telephony] No media active (MediaRemote=\(hasNowPlayingApp ? "paused" : "empty"), CoreAudio=\(!hasNowPlayingApp ? "silent" : "n/a"))")
                 }
             }
         }
