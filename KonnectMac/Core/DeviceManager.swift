@@ -69,6 +69,7 @@ class DeviceManager: ObservableObject {
 
                     if path.status == .satisfied {
                         self.broadcastIdentity()
+                        self.reconnectPairedDevices()
                     }
                 }
             }
@@ -83,9 +84,10 @@ class DeviceManager: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
-                KLog.log("[DeviceManager] System woke from sleep — broadcasting identity and pruning stale connections")
+                KLog.log("[DeviceManager] System woke from sleep — pruning stale connections and reconnecting")
                 self.disconnectNonReachableConnections()
                 self.broadcastIdentity()
+                self.reconnectPairedDevices()
             }
         }
 
@@ -103,6 +105,22 @@ class DeviceManager: ObservableObject {
         let tailscaleIP = Config.shared.tailscaleIP
         if !tailscaleIP.isEmpty {
             connectDirectToHost(host: tailscaleIP, port: Config.defaultPort)
+        }
+    }
+
+    /// Actively reconnect to paired devices using their last known IP.
+    /// Called on wake and after network changes — don't wait for the phone to hear our broadcast.
+    private func reconnectPairedDevices() {
+        for device in devices.values where Config.shared.isPaired(deviceId: device.id) {
+            // Skip if already connected
+            if let conn = connections[device.id], conn.running {
+                continue
+            }
+            // Try last known IP
+            if let ip = Config.shared.savedDeviceIP(for: device.id), !ip.isEmpty {
+                KLog.log("[DeviceManager] Reconnecting to \(device.name) at \(ip)")
+                connectDirectToHost(host: ip, port: Config.defaultPort)
+            }
         }
     }
 
@@ -480,6 +498,11 @@ class DeviceManager: ObservableObject {
             device.send(batteryRequest)
         } else {
             self.updateDeviceState(device, to: .discovered)
+        }
+
+        // Save last known IP for reconnection after sleep/wake
+        if Config.shared.isPaired(deviceId: deviceId) {
+            Config.shared.saveDeviceIP(conn.host, for: deviceId)
         }
 
         KLog.log("[Link] Finalized connection to \(device.name) (\(deviceId))")
