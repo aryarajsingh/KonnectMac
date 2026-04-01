@@ -228,6 +228,11 @@ class Config: ObservableObject {
         do {
             try plist.write(toFile: Config.launchAgentPath, atomically: true, encoding: .utf8)
             KLog.log("[Config] LaunchAgent installed at \(Config.launchAgentPath)")
+            // Load immediately so it activates without needing a logout/login
+            let path = Config.launchAgentPath
+            DispatchQueue.global(qos: .background).async {
+                self.runLaunchctl("load", path)
+            }
         } catch {
             KLog.log("[Config] Failed to install LaunchAgent: \(error)")
             self.autoStart = false
@@ -235,8 +240,31 @@ class Config: ObservableObject {
     }
 
     private func removeLaunchAgent() {
-        try? FileManager.default.removeItem(atPath: Config.launchAgentPath)
-        KLog.log("[Config] LaunchAgent removed")
+        let path = Config.launchAgentPath
+        // Unload from launchd before deleting the file, then remove
+        DispatchQueue.global(qos: .background).async {
+            self.runLaunchctl("unload", path)
+            try? FileManager.default.removeItem(atPath: path)
+            KLog.log("[Config] LaunchAgent unloaded and removed")
+        }
+    }
+
+    @discardableResult
+    private nonisolated func runLaunchctl(_ command: String, _ path: String) -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = [command, path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            KLog.log("[Config] launchctl \(command) failed: \(error)")
+            return -1
+        }
+        KLog.log("[Config] launchctl \(command) exit=\(process.terminationStatus)")
+        return process.terminationStatus
     }
 
     /// Sync login item state on launch

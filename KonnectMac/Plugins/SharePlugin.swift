@@ -174,7 +174,8 @@ class SharePlugin: PluginProtocol {
         DispatchQueue.global(qos: .userInitiated).async {
             defer { try? fileHandle.close() }
 
-            var timeout = timeval(tv_sec: 30, tv_usec: 0)
+            // 60s timeout — phone may need a moment to open the connection
+            var timeout = timeval(tv_sec: 60, tv_usec: 0)
             setsockopt(serverFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
             var clientAddr = sockaddr_storage()
@@ -187,9 +188,14 @@ class SharePlugin: PluginProtocol {
             Darwin.close(serverFd)
 
             guard clientFd >= 0 else {
-                KLog.log("[Share] No client connected within timeout")
+                KLog.log("[Share] Phone never connected for file send (timeout or firewall)")
+                Task { @MainActor in self.showFileSendFailedNotification(filename: filename) }
                 return
             }
+
+            // Disable Nagle to improve streaming throughput
+            var nodelay: Int32 = 1
+            setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
 
             // Setup TLS as server — must match KDEConnection's TLS config exactly
             guard let ctx = SSLCreateContext(nil, .serverSide, .streamType) else {
@@ -293,7 +299,13 @@ class SharePlugin: PluginProtocol {
             SSLClose(ctx)
             Darwin.close(clientFd)
             // fdPtr.deallocate() handled by defer
-            KLog.log("[Share] File sent via TLS: \(filename) (\(totalWritten) bytes)")
+            if sendError || totalWritten < fileSize {
+                KLog.log("[Share] File send incomplete: \(filename) (\(totalWritten)/\(fileSize) bytes)")
+                Task { @MainActor in self.showFileSendFailedNotification(filename: filename) }
+            } else {
+                KLog.log("[Share] File sent via TLS: \(filename) (\(totalWritten) bytes)")
+                Task { @MainActor in self.showFileSentNotification(filename: filename) }
+            }
         }
     }
 
@@ -553,6 +565,26 @@ class SharePlugin: PluginProtocol {
         let content = UNMutableNotificationContent()
         content.title = "File Transfer Failed"
         content.body = filename
+        content.sound = .default
+
+        let request = UNNotificationRequest(identifier: "file-\(UUID().uuidString)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func showFileSentNotification(filename: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "File Sent"
+        content.body = filename
+        content.sound = .default
+
+        let request = UNNotificationRequest(identifier: "file-\(UUID().uuidString)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func showFileSendFailedNotification(filename: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "File Send Failed"
+        content.body = "\(filename) — Phone did not connect. Check firewall settings."
         content.sound = .default
 
         let request = UNNotificationRequest(identifier: "file-\(UUID().uuidString)", content: content, trigger: nil)
