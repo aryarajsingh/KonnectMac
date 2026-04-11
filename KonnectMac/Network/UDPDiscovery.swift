@@ -55,10 +55,11 @@ class UDPDiscovery {
             }
             var broadcast: Int32 = 1
             setsockopt(broadcastSocket, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout<Int32>.size))
-            // Non-blocking: sendto must never stall the main thread if the kernel buffer
-            // is momentarily full (e.g., during a network transition at startup).
-            var flags = fcntl(broadcastSocket, F_GETFL)
-            fcntl(broadcastSocket, F_SETFL, flags | O_NONBLOCK)
+            // 100ms send timeout: sendto on UDP is normally instantaneous, but during
+            // a routing-table rebuild at startup it can block indefinitely. A short
+            // timeout caps the worst case without EAGAIN-dropping packets like O_NONBLOCK.
+            var sndTimeout = timeval(tv_sec: 0, tv_usec: 100_000)
+            setsockopt(broadcastSocket, SOL_SOCKET, SO_SNDTIMEO, &sndTimeout, socklen_t(MemoryLayout<timeval>.size))
         }
 
         guard let data = packet.serialize() else { return }
@@ -159,7 +160,10 @@ class UDPDiscovery {
         while true {
             let flags = Int32(ptr.pointee.ifa_flags)
             let addr = ptr.pointee.ifa_addr.pointee
-            if addr.sa_family == UInt8(AF_INET) && (flags & (IFF_UP | IFF_BROADCAST)) != 0 {
+            // Require BOTH IFF_UP and IFF_BROADCAST — using | (OR) instead of two ANDs
+            // would match loopback (IFF_UP only), sending 51 useless sends to 127.0.0.1
+            // that fill the socket buffer before the real WiFi broadcast address.
+            if addr.sa_family == UInt8(AF_INET) && (flags & IFF_UP) != 0 && (flags & IFF_BROADCAST) != 0 {
                 if let dstaddr = ptr.pointee.ifa_dstaddr {
                     var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                     getnameinfo(dstaddr, socklen_t(addr.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
