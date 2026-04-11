@@ -55,6 +55,10 @@ class UDPDiscovery {
             }
             var broadcast: Int32 = 1
             setsockopt(broadcastSocket, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout<Int32>.size))
+            // Non-blocking: sendto must never stall the main thread if the kernel buffer
+            // is momentarily full (e.g., during a network transition at startup).
+            var flags = fcntl(broadcastSocket, F_GETFL)
+            fcntl(broadcastSocket, F_SETFL, flags | O_NONBLOCK)
         }
 
         guard let data = packet.serialize() else { return }
