@@ -671,7 +671,7 @@ class DeviceManager: ObservableObject {
         if let conn = conn, conn.running, conn.fd >= 0 {
             // Send pair request on the active connection
             let pairPacket = NetworkPacket.pairPacket(pair: true)
-            device.send(pairPacket)
+            conn.send(pairPacket)
             lastPairRequestTime[deviceId] = Date()
             KLog.log("[Pairing] Sent pair request to \(device.name) (fd=\(conn.fd))")
         } else {
@@ -683,7 +683,7 @@ class DeviceManager: ObservableObject {
                 let retryConn = device.kdeConn ?? self.connections[deviceId]
                 if let c = retryConn, c.running, c.fd >= 0 {
                     let pairPacket = NetworkPacket.pairPacket(pair: true)
-                    device.send(pairPacket)
+                    c.send(pairPacket)
                     self.lastPairRequestTime[deviceId] = Date()
                     KLog.log("[Pairing] Sent pair request to \(device.name) on retry (fd=\(c.fd))")
                 } else {
@@ -748,7 +748,7 @@ class DeviceManager: ObservableObject {
             if Config.shared.isPaired(deviceId: deviceId) {
                 KLog.log("[Pairing] Already paired with \(device.name), confirming re-pair silently")
                 let response = NetworkPacket.pairPacket(pair: true)
-                device.send(response)
+                conn.send(response)
                 completePairing(device: device, conn: conn)
                 return
             }
@@ -763,6 +763,9 @@ class DeviceManager: ObservableObject {
             }
             pendingIncomingPairDevices.insert(deviceId)
             KLog.log("[Pairing] Request from \(device.name)")
+            // Pre-capture cert now — conn.getPeerCertificate() may return nil later if
+            // the phone's connection cycles during runModal() and SSL is cleaned up.
+            let preCapturedCert = conn.getPeerCertificate()
             PairingHandler.showPairingRequest(from: device, connection: conn) { [weak self] accepted in
                 guard let self = self else { return }
                 // defer ensures cleanup even if something throws or returns early
@@ -780,7 +783,7 @@ class DeviceManager: ObservableObject {
                     // Send directly on activeConn as belt-and-suspenders
                     activeConn.send(response)
                     KLog.log("[Pairing] Sent pair=true response to \(device.name) on fd=\(activeConn.fd)")
-                    self.completePairing(device: device, conn: activeConn)
+                    self.completePairing(device: device, conn: activeConn, preCapturedCert: preCapturedCert)
                 } else {
                     let response = NetworkPacket.pairPacket(pair: false)
                     device.send(response)
@@ -829,7 +832,7 @@ class DeviceManager: ObservableObject {
         recentlyPairedDevices = recentlyPairedDevices.filter { $0.value > cutoff }
     }
 
-    func completePairing(device: Device, conn: KDEConnection) {
+    func completePairing(device: Device, conn: KDEConnection, preCapturedCert: SecCertificate? = nil) {
         // Guard against duplicate completePairing calls (reconnect re-confirmation, race conditions)
         if device.connectionState == .paired && Config.shared.isPaired(deviceId: device.id) {
             // Already fully paired — just refresh the timestamp
@@ -843,8 +846,10 @@ class DeviceManager: ObservableObject {
         // Always clear pending state — whether we initiated or phone did
         pendingPairRequests.remove(device.id)
 
-        // Save peer certificate — REQUIRED for secure pairing
-        guard let peerCert = conn.getPeerCertificate() else {
+        // Save peer certificate — REQUIRED for secure pairing.
+        // Fall back to preCapturedCert if the connection cycled during a runModal() dialog.
+        let peerCert = conn.getPeerCertificate() ?? preCapturedCert
+        guard let peerCert = peerCert else {
             KLog.log("[Pairing] CRITICAL: No peer certificate from \(device.name) — refusing to pair. Connection has no trust anchor.")
             return
         }
