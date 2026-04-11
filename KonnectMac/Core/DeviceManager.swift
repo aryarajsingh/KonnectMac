@@ -135,11 +135,13 @@ class DeviceManager: ObservableObject {
         let deviceType = packet.body["deviceType"]?.value as? String ?? "phone"
         let tcpPort = packet.body["tcpPort"]?.value as? Int ?? Int(Config.minPort)
 
-        // Check if already connected
+        // Check if already connected or being connected.
+        // Don't require conn.running — an incoming connection may not be running yet
+        // (async queue not started) but still blocks a redundant outgoing attempt.
         if tlsEstablishedDeviceIds.contains(deviceId) { return }
         if connectingDeviceIds.contains(deviceId) { return }
         for (_, conn) in connections {
-            if conn.running && (conn.remoteDeviceId == deviceId || conn.host == host) {
+            if conn.remoteDeviceId == deviceId || conn.host == host {
                 return
             }
         }
@@ -596,36 +598,45 @@ class DeviceManager: ObservableObject {
     private func handleDisconnection(conn: KDEConnection) {
         let deviceId = conn.remoteDeviceId
         if let id = deviceId {
-            tlsEstablishedDeviceIds.remove(id)
             connectingDeviceIds.remove(id)
+
+            // Only tear down device state if THIS conn is still the active one.
+            // If connections[id] already points to a different (newer) conn, a replacement
+            // is in progress — don't set the device to .disconnected or wipe tlsEstablished.
+            // Without this guard, every 15s reconnect fires a spurious disconnect→reconnect
+            // flash in the device list.
             if connections[id] === conn {
                 connections.removeValue(forKey: id)
-            }
-            if let device = devices[id] {
-                // Stop clipboard polling and clear echo prevention flags
-                if let clipPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
-                    clipPlugin.stop()
-                }
-                // Resume media if phone disconnected during an active call, then reset all state
-                if let telPlugin = device.plugins["telephony"] as? TelephonyPlugin {
-                    if telPlugin.hasActiveCall {
-                        telPlugin.onCallEnded()
+                tlsEstablishedDeviceIds.remove(id)
+
+                if let device = devices[id] {
+                    // Stop clipboard polling and clear echo prevention flags
+                    if let clipPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
+                        clipPlugin.stop()
                     }
-                    telPlugin.resetOnDisconnect()
+                    // Resume media if phone disconnected during an active call, then reset all state
+                    if let telPlugin = device.plugins["telephony"] as? TelephonyPlugin {
+                        if telPlugin.hasActiveCall {
+                            telPlugin.onCallEnded()
+                        }
+                        telPlugin.resetOnDisconnect()
+                    }
+                    // Reset battery notification flag so low-battery alerts fire on reconnect
+                    if let batPlugin = device.plugins["battery"] as? BatteryPlugin {
+                        batPlugin.resetOnDisconnect()
+                    }
+                    // Don't clear pendingPairRequests on disconnect — the phone reconnects TCP
+                    // mid-pair (normal behavior), and the reconnect carries pairing forward.
+                    // The 30s timeout and completePairing() handle cleanup.
+                    device.kdeConn = nil
+                    device.batteryLevel = -1
+                    device.batteryCharging = false
+                    self.updateDeviceState(device, to: .disconnected)
+                    // Force SwiftUI to see the change by re-assigning the device in the dict
+                    self.devices[id] = device
                 }
-                // Reset battery notification flag so low-battery alerts fire on reconnect
-                if let batPlugin = device.plugins["battery"] as? BatteryPlugin {
-                    batPlugin.resetOnDisconnect()
-                }
-                // Don't clear pendingPairRequests on disconnect — the phone reconnects TCP
-                // mid-pair (normal behavior), and the reconnect carries pairing forward.
-                // The 30s timeout and completePairing() handle cleanup.
-                device.kdeConn = nil
-                device.batteryLevel = -1
-                device.batteryCharging = false
-                self.updateDeviceState(device, to: .disconnected)
-                // Force SwiftUI to see the change by re-assigning the device in the dict
-                self.devices[id] = device
+            } else {
+                KLog.log("[Link] Stale disconnect for \(id) — replacement connection active, skipping state change")
             }
         }
         // Clean up temp keys
