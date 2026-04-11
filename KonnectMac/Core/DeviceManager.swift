@@ -607,33 +607,34 @@ class DeviceManager: ObservableObject {
             // flash in the device list.
             if connections[id] === conn {
                 connections.removeValue(forKey: id)
-                tlsEstablishedDeviceIds.remove(id)
+                // Capture whether TLS was established BEFORE clearing the set.
+                // If TLS never happened (e.g. outgoing TCP connect was refused), the
+                // device was never truly connected — don't flash it to .disconnected.
+                let wasTLSEstablished = tlsEstablishedDeviceIds.remove(id) != nil
 
                 if let device = devices[id] {
-                    // Stop clipboard polling and clear echo prevention flags
-                    if let clipPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
-                        clipPlugin.stop()
-                    }
-                    // Resume media if phone disconnected during an active call, then reset all state
-                    if let telPlugin = device.plugins["telephony"] as? TelephonyPlugin {
-                        if telPlugin.hasActiveCall {
-                            telPlugin.onCallEnded()
+                    if wasTLSEstablished || device.connectionState == .paired {
+                        // Real connection drop — stop plugins and update device state.
+                        if let clipPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
+                            clipPlugin.stop()
                         }
-                        telPlugin.resetOnDisconnect()
+                        if let telPlugin = device.plugins["telephony"] as? TelephonyPlugin {
+                            if telPlugin.hasActiveCall { telPlugin.onCallEnded() }
+                            telPlugin.resetOnDisconnect()
+                        }
+                        if let batPlugin = device.plugins["battery"] as? BatteryPlugin {
+                            batPlugin.resetOnDisconnect()
+                        }
+                        // Don't clear pendingPairRequests on disconnect — the phone reconnects
+                        // TCP mid-pair (normal behavior), and the reconnect carries pairing forward.
+                        device.kdeConn = nil
+                        device.batteryLevel = -1
+                        device.batteryCharging = false
+                        self.updateDeviceState(device, to: .disconnected)
+                        self.devices[id] = device
                     }
-                    // Reset battery notification flag so low-battery alerts fire on reconnect
-                    if let batPlugin = device.plugins["battery"] as? BatteryPlugin {
-                        batPlugin.resetOnDisconnect()
-                    }
-                    // Don't clear pendingPairRequests on disconnect — the phone reconnects TCP
-                    // mid-pair (normal behavior), and the reconnect carries pairing forward.
-                    // The 30s timeout and completePairing() handle cleanup.
-                    device.kdeConn = nil
-                    device.batteryLevel = -1
-                    device.batteryCharging = false
-                    self.updateDeviceState(device, to: .disconnected)
-                    // Force SwiftUI to see the change by re-assigning the device in the dict
-                    self.devices[id] = device
+                    // else: outgoing failed before TLS (Connection refused, timeout, etc.)
+                    // Keep device in .discovered state — phone will connect incoming shortly.
                 }
             } else {
                 KLog.log("[Link] Stale disconnect for \(id) — replacement connection active, skipping state change")
