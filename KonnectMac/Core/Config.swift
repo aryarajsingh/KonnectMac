@@ -217,7 +217,10 @@ class Config: ObservableObject {
             <key>RunAtLoad</key>
             <true/>
             <key>KeepAlive</key>
-            <false/>
+            <dict>
+                <key>SuccessfulExit</key>
+                <false/>
+            </dict>
         </dict>
         </plist>
         """
@@ -255,13 +258,12 @@ class Config: ObservableObject {
         }
     }
 
-    /// Sync login item state on launch
+    /// Sync login item state on launch. Always overwrites the plist when autoStart is on
+    /// so that existing users pick up KeepAlive / other plist changes on next app launch.
     func syncLoginItemStatus() {
-        let agentExists = FileManager.default.fileExists(atPath: Config.launchAgentPath)
-        if autoStart && !agentExists {
-            KLog.log("[Config] LaunchAgent missing but autoStart=true. Reinstalling.")
+        if autoStart {
             installLaunchAgent()
-        } else if !autoStart && agentExists {
+        } else if FileManager.default.fileExists(atPath: Config.launchAgentPath) {
             KLog.log("[Config] LaunchAgent exists but autoStart=false. Removing.")
             removeLaunchAgent()
         }
