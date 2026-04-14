@@ -393,7 +393,7 @@ struct AboutTab: View {
             }
             Text("KonnectMac")
                 .font(.title.bold())
-            Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")")
+            Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")")
                 .foregroundColor(.secondary)
             Text("A native macOS KDE Connect client")
                 .foregroundColor(.secondary)

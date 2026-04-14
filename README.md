@@ -97,11 +97,46 @@ Mac                              Phone
 
 ## Build from Source
 
+### Requirements
+
+- macOS 14 (Sonoma) or later
+- Xcode 15+ (with Command Line Tools)
+
+### Build
+
+**Option A — Xcode (recommended)**
+
+1. Open `KonnectMac.xcodeproj` in Xcode
+2. Select the **KonnectMac** scheme → **Release** configuration
+3. Press **Cmd+B** to build
+
+**Option B — Command line**
+
 ```bash
 git clone https://github.com/aryarajsingh/KonnectMac.git
 cd KonnectMac
 xcodebuild -project KonnectMac.xcodeproj -scheme KonnectMac -configuration Release build
 ```
+
+### Run
+
+**From Xcode:** Press **Cmd+R**.
+
+**From the command line:** After building, the app is in your DerivedData folder. Open it directly:
+
+```bash
+open "$(xcodebuild -project KonnectMac.xcodeproj -scheme KonnectMac -configuration Release -showBuildSettings 2>/dev/null | grep -m1 'BUILT_PRODUCTS_DIR' | awk '{print $3}')/KonnectMac.app"
+```
+
+Or copy it to `/Applications` for regular use:
+
+```bash
+BUILT=$(xcodebuild -project KonnectMac.xcodeproj -scheme KonnectMac -configuration Release -showBuildSettings 2>/dev/null | grep -m1 'BUILT_PRODUCTS_DIR' | awk '{print $3}')
+cp -R "$BUILT/KonnectMac.app" /Applications/
+open /Applications/KonnectMac.app
+```
+
+> **Note:** macOS may warn about an unidentified developer on first launch. Right-click the app → **Open** to bypass.
 
 <details>
 <summary><strong>Architecture</strong></summary>

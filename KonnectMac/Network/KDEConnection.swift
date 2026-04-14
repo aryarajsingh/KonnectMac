@@ -215,7 +215,13 @@ class KDEConnection {
         guard handshakeResult == errSecSuccess else {
             KLog.log("[KDEConn] TLS handshake failed: \(handshakeResult) for \(host) after \(attempts) attempts (isTLSServer=\(isTLSServer))")
             cleanupSSL()
-            disconnect()
+            let failedFd = _fd
+            _fd = -1
+            if failedFd >= 0 { Darwin.close(failedFd) }
+            _running = false
+            DispatchQueue.main.async { [weak self] in
+                self?.onDisconnected?()
+            }
             return
         }
 
