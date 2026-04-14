@@ -37,3 +37,5 @@ Installer/payload/
 .dev/
 CLAUDE.md
 .claude/
+
+*.pkg

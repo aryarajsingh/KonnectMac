@@ -138,6 +138,18 @@ open /Applications/KonnectMac.app
 
 > **Note:** macOS may warn about an unidentified developer on first launch. Right-click the app → **Open** to bypass.
 
+### Create a .pkg installer
+
+```bash
+./build-pkg.sh
+```
+
+This builds the app in Release mode and generates `KonnectMac-1.3.pkg` in the project root. Double-click to install, or install from the command line:
+
+```bash
+sudo installer -pkg KonnectMac-1.3.pkg -target /
+```
+
 <details>
 <summary><strong>Architecture</strong></summary>
 
