@@ -83,10 +83,14 @@ class DeviceManager: ObservableObject {
             object: nil,
             queue: nil
         ) { [weak self] _ in
-            Task { @MainActor in
+            DispatchQueue.main.async {
                 guard let self = self else { return }
-                KLog.log("[DeviceManager] System going to sleep — disconnecting all connections")
-                self.forceDisconnectAll()
+                KLog.log("[DeviceManager] System going to sleep — shutting down sockets")
+                for (_, conn) in self.connections {
+                    let fd = conn.fd
+                    if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
+                    conn.disconnect()
+                }
             }
         }
 
@@ -99,10 +103,18 @@ class DeviceManager: ObservableObject {
                 guard let self = self else { return }
                 KLog.log("[DeviceManager] System woke from sleep — reconnecting")
                 self.forceDisconnectAll()
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !Task.isCancelled else { return }
                 self.broadcastIdentity()
                 self.reconnectPairedDevices()
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled else { return }
+                let hasActiveConnection = self.connections.values.contains { $0.running && $0.tlsEstablished }
+                if !hasActiveConnection {
+                    KLog.log("[DeviceManager] No connection after 20s — retrying broadcast")
+                    self.broadcastIdentity()
+                    self.reconnectPairedDevices()
+                }
             }
         }
 
@@ -116,9 +128,10 @@ class DeviceManager: ObservableObject {
         let identity = NetworkPacket.identityPacket()
         udpDiscovery.broadcast(packet: identity)
 
-        // Direct connect to Tailscale/VPN IP — full KDEConnection, not fire-and-close
+        // Direct connect to Tailscale/VPN IP — only for non-LAN IPs (100.x.x.x etc.)
+        // Connecting to a WiFi IP every 15s creates useless connections that block incoming ones
         let tailscaleIP = Config.shared.tailscaleIP
-        if !tailscaleIP.isEmpty {
+        if !tailscaleIP.isEmpty && tailscaleIP.hasPrefix("100.") {
             connectDirectToHost(host: tailscaleIP, port: Config.defaultPort)
         }
     }
@@ -578,10 +591,12 @@ class DeviceManager: ObservableObject {
     }
 
     /// Force-disconnect ALL connections and clear internal state.
-    /// Used before sleep and on wake to ensure a clean slate — after sleep,
+    /// Used on wake to ensure a clean slate — after sleep,
     /// TCP connections are stale regardless of subnet reachability.
     private func forceDisconnectAll() {
         for (_, conn) in connections {
+            let fd = conn.fd
+            if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
             conn.disconnect()
         }
         connections.removeAll()
