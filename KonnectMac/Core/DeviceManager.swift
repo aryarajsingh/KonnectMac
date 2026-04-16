@@ -13,6 +13,7 @@ class DeviceManager: ObservableObject {
     @Published var pendingPairRequests = Set<String>() // devices WE sent pair request to
     private var pendingIncomingPairDevices = Set<String>() // devices showing incoming pair dialog (prevents duplicate notifications)
     private var lastPairRequestTime: [String: Date] = [:] // deviceId -> when we last sent pair request
+    private var lastReconnectAttemptTime: [String: Date] = [:] // deviceId -> last outbound reconnect attempt
 
     private let udpDiscovery = UDPDiscovery()
     private let tcpServer = LanServer()
@@ -21,8 +22,16 @@ class DeviceManager: ObservableObject {
     private var sleepWakeObserver: NSObjectProtocol?
     private var willSleepObserver: NSObjectProtocol?
     private var networkDebounceTask: Task<Void, Never>?
+    private var wakeRecoveryUntil: Date?
 
     private init() {}
+
+    private var inWakeRecoveryWindow: Bool {
+        if let until = wakeRecoveryUntil {
+            return Date() < until
+        }
+        return false
+    }
 
     func start() {
         KLog.log("[DeviceManager] Starting...")
@@ -45,6 +54,12 @@ class DeviceManager: ObservableObject {
         broadcastTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.broadcastIdentity()
+                // During immediate post-wake recovery, mimic startup behavior:
+                // discovery + incoming connections only. Fallback direct reconnect
+                // starts after the recovery window expires.
+                if self?.inWakeRecoveryWindow == false {
+                    self?.reconnectPairedDevices()
+                }
             }
         }
 
@@ -70,7 +85,9 @@ class DeviceManager: ObservableObject {
 
                     if path.status == .satisfied {
                         self.broadcastIdentity()
-                        self.reconnectPairedDevices()
+                        if !self.inWakeRecoveryWindow {
+                            self.reconnectPairedDevices()
+                        }
                     }
                 }
             }
@@ -102,19 +119,39 @@ class DeviceManager: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 KLog.log("[DeviceManager] System woke from sleep — reconnecting")
+                CertificateManager.shared.invalidateCache()
                 self.forceDisconnectAll()
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-                guard !Task.isCancelled else { return }
+                self.restartTransportServices()
+                // Startup-like recovery window: prioritize UDP discovery + incoming TCP.
+                // Avoid immediate direct reconnect races while WiFi is still stabilizing.
+                self.wakeRecoveryUntil = Date().addingTimeInterval(30)
+
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 self.broadcastIdentity()
-                self.reconnectPairedDevices()
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
-                guard !Task.isCancelled else { return }
-                let hasActiveConnection = self.connections.values.contains { $0.running && $0.tlsEstablished }
-                if !hasActiveConnection {
-                    KLog.log("[DeviceManager] No connection after 20s — retrying broadcast")
+
+                // Keep retrying every 15s until connected, up to 3 minutes post-wake.
+                // First attempts (inside recovery window) do discovery-only. After that,
+                // enable direct reconnect fallback via saved IP.
+                for attempt in 1...12 {
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    let connected = self.connections.values.contains { $0.running && $0.tlsEstablished }
+                    if connected {
+                        self.wakeRecoveryUntil = nil
+                        break
+                    }
+
+                    if self.inWakeRecoveryWindow {
+                        KLog.log("[DeviceManager] Wake retry \(attempt) — discovery phase")
+                        self.broadcastIdentity()
+                        continue
+                    }
+
+                    KLog.log("[DeviceManager] Wake retry \(attempt) — fallback direct reconnect")
                     self.broadcastIdentity()
-                    self.reconnectPairedDevices()
+                    self.reconnectPairedDevices(force: true)
                 }
+
+                self.wakeRecoveryUntil = nil
             }
         }
 
@@ -138,16 +175,31 @@ class DeviceManager: ObservableObject {
 
     /// Actively reconnect to paired devices using their last known IP.
     /// Called on wake and after network changes — don't wait for the phone to hear our broadcast.
-    private func reconnectPairedDevices() {
+    private func reconnectPairedDevices(force: Bool = false) {
+        // During immediate wake recovery, mimic startup behavior and wait for discovery.
+        guard force || !inWakeRecoveryWindow else { return }
+
         for device in devices.values where Config.shared.isPaired(deviceId: device.id) {
             // Skip if already connected
             if let conn = connections[device.id], conn.running {
                 continue
             }
+
+            // Throttle reconnect attempts. After wake, multiple triggers can overlap
+            // (wake task, path monitor, broadcast timer), which can spam TLS handshakes
+            // every few seconds and keep the phone in a failed loop.
+            if let lastAttempt = lastReconnectAttemptTime[device.id],
+               Date().timeIntervalSince(lastAttempt) < 20 {
+                continue
+            }
+
             // Try last known IP
             if let ip = Config.shared.savedDeviceIP(for: device.id), !ip.isEmpty {
+                lastReconnectAttemptTime[device.id] = Date()
                 KLog.log("[DeviceManager] Reconnecting to \(device.name) at \(ip)")
-                connectDirectToHost(host: ip, port: Config.defaultPort)
+                // Reconnect via device-bound outgoing flow so remoteDeviceId is known
+                // before early post-TLS packets arrive.
+                connectOutgoing(device: device, host: ip, port: Config.defaultPort)
             }
         }
     }
@@ -164,12 +216,23 @@ class DeviceManager: ObservableObject {
         let tcpPort = packet.body["tcpPort"]?.value as? Int ?? Int(Config.minPort)
 
         // Check if already connected or being connected.
-        // Don't require conn.running — an incoming connection may not be running yet
-        // (async queue not started) but still blocks a redundant outgoing attempt.
-        if tlsEstablishedDeviceIds.contains(deviceId) { return }
+        if tlsEstablishedDeviceIds.contains(deviceId) {
+            // Verify the connection is actually alive — after sleep/wake it may be stale
+            if let conn = connections.values.first(where: { $0.remoteDeviceId == deviceId }),
+               isSocketAlive(conn.fd) {
+                return
+            }
+            // Stale connection — clean it up and allow reconnection
+            KLog.log("[Discovery] Stale connection for \(deviceName), allowing reconnect")
+            for (key, conn) in connections where conn.remoteDeviceId == deviceId {
+                conn.disconnect()
+                connections.removeValue(forKey: key)
+            }
+            tlsEstablishedDeviceIds.remove(deviceId)
+        }
         if connectingDeviceIds.contains(deviceId) { return }
         for (_, conn) in connections {
-            if conn.remoteDeviceId == deviceId || conn.host == host {
+            if conn.host == host && isSocketAlive(conn.fd) {
                 return
             }
         }
@@ -207,10 +270,10 @@ class DeviceManager: ObservableObject {
 
         // Connection replacement rules:
         // - Pending pair → accept (phone sends pair=true on new connections)
-        // - Paired + running → REJECT (TCP keepalive detects dead connections; idle is normal)
-        //   This applies for SAME host AND SAME device on different host (WiFi vs Tailscale)
-        // - Unpaired + running → accept (phone is still discovering, may have replaced its socket)
-        // - Not running → accept (connection is dead)
+        // - Running + pre-TLS handshake → prefer incoming (break dual-outgoing races)
+        // - Running + TLS established + live socket → reject incoming
+        // - Running + dead socket → accept incoming
+        // - Not running → accept incoming
 
         for (key, conn) in connections {
             // Match by host (same network path) OR by device ID (same device, different network)
@@ -232,15 +295,23 @@ class DeviceManager: ObservableObject {
             }
 
             if conn.running {
-                if isPaired {
-                    // Paired + running → keep the existing connection. Period.
-                    // TCP keepalive will detect if it's truly dead.
-                    // This also prevents WiFi↔Tailscale flip-flopping.
+                if isSocketAlive(conn.fd) {
+                    if !conn.tlsEstablished {
+                        // Existing connection is alive but still handshaking (common right
+                        // after wake when both sides initiate). Prefer incoming to avoid
+                        // both sides ending up as TLS server on parallel outgoing sockets.
+                        KLog.log("[TCP] Replacing in-progress connection from \(host) with incoming (fd=\(conn.fd))")
+                        conn.disconnect()
+                        connections.removeValue(forKey: key)
+                        if let devId = deviceId { tlsEstablishedDeviceIds.remove(devId) }
+                        break
+                    }
+
+                    KLog.log("[TCP] Rejecting incoming from \(host) — existing TLS connection fd=\(conn.fd)")
                     Darwin.close(fd)
                     return
                 }
-                // Unpaired + running → accept (phone reconnects during discovery)
-                KLog.log("[TCP] Replacing unpaired connection from \(host)")
+                KLog.log("[TCP] Replacing stale connection from \(host) (fd=\(conn.fd), paired=\(isPaired))")
                 conn.disconnect()
                 connections.removeValue(forKey: key)
                 if let devId = deviceId { tlsEstablishedDeviceIds.remove(devId) }
@@ -376,13 +447,19 @@ class DeviceManager: ObservableObject {
     private func connectDirectToHost(host: String, port: UInt16) {
         // Already have a running connection to this host? Skip.
         for (_, conn) in connections {
-            if conn.host == host && conn.running { return }
+            if conn.host == host && conn.running {
+                KLog.log("[DirectConnect] Skipped \(host) — already connected")
+                return
+            }
         }
 
         let tempKey = "direct_\(host)"
 
         // Already connecting? Skip.
-        if connectingDeviceIds.contains(tempKey) { return }
+        if connectingDeviceIds.contains(tempKey) {
+            KLog.log("[DirectConnect] Skipped \(host) — connect already in progress")
+            return
+        }
         connectingDeviceIds.insert(tempKey)
 
         KLog.log("[DirectConnect] Initiating full connection to \(host):\(port)")
@@ -499,6 +576,7 @@ class DeviceManager: ObservableObject {
 
         tlsEstablishedDeviceIds.insert(deviceId)
         connectingDeviceIds.remove(deviceId)
+        lastReconnectAttemptTime.removeValue(forKey: deviceId)
         connections[deviceId] = conn
 
         let device = getOrCreateDevice(id: deviceId, name: Config.shared.savedDeviceName(for: deviceId) ?? deviceId)
@@ -602,6 +680,7 @@ class DeviceManager: ObservableObject {
         connections.removeAll()
         tlsEstablishedDeviceIds.removeAll()
         connectingDeviceIds.removeAll()
+        lastReconnectAttemptTime.removeAll()
         for device in devices.values {
             if let clipPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
                 clipPlugin.stop()
@@ -618,6 +697,21 @@ class DeviceManager: ObservableObject {
                 updateDeviceState(device, to: .disconnected)
             }
         }
+    }
+
+    /// Recreate UDP and TCP sockets after sleep/wake.
+    /// macOS can leave listening sockets unusable across suspend/resume,
+    /// so reconnect logic needs fresh transport endpoints before broadcasting.
+    private func restartTransportServices(stopOnly: Bool = false) {
+        udpDiscovery.stop()
+        tcpServer.stop()
+
+        guard !stopOnly else { return }
+
+        tcpServer.start(preferredPort: Config.shared.tcpPort)
+        Config.shared.tcpPort = tcpServer.actualPort
+        udpDiscovery.startListening(port: Config.shared.tcpPort)
+        KLog.log("[DeviceManager] Restarted transport services on port \(Config.shared.tcpPort)")
     }
 
     private func getCurrentLocalIPs() -> [String] {
@@ -970,6 +1064,21 @@ class DeviceManager: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    /// Check if a socket fd is actually alive using a zero-byte write.
+    /// After sleep/wake, the OS may keep the fd open but the TCP connection is dead —
+    /// this detects it without blocking. Returns false if the fd is -1 or write fails.
+    private func isSocketAlive(_ fd: Int32) -> Bool {
+        guard fd >= 0 else { return false }
+        var err: Int32 = 0
+        var errLen = socklen_t(MemoryLayout<Int32>.size)
+        let result = getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errLen)
+        if result != 0 || err != 0 {
+            KLog.log("[TCP] Socket fd=\(fd) dead: getsockopt result=\(result), error=\(err)")
+            return false
+        }
+        return true
+    }
 
     func getOrCreateDevice(id: String, name: String, type: String = "phone") -> Device {
         if let existing = devices[id] {

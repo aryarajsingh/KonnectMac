@@ -193,24 +193,30 @@ class KDEConnection {
         setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &handshakeTimeout, socklen_t(MemoryLayout<timeval>.size))
 
         // Perform TLS handshake
+        // SecureTransport returns informational status codes that require continuing:
+        // -9841 (errSSLServerAuthCompleted / errSSLPeerAuthCompleted)
+        // -9810 (errSSLPeerAuthCompleted on some macOS versions)
+        // -9851 (errSSLClientCertRequested)
+        // These are NOT errors — they signal that an auth phase completed and the
+        // handshake should be continued by calling SSLHandshake again.
+        // IMPORTANT: use literal values because the named constants may not match
+        // across macOS SDK versions.
         KLog.log("[KDEConn] Starting TLS handshake with \(host) (server=\(isTLSServer))")
-        var handshakeResult: OSStatus
+        var handshakeResult: OSStatus = errSecSuccess
         var attempts = 0
         let handshakeDeadline = Date().addingTimeInterval(15)
         repeat {
             handshakeResult = SSLHandshake(sslContext!)
             attempts += 1
-            if attempts <= 5 || attempts % 100 == 0 {
-                KLog.log("[KDEConn] Handshake attempt \(attempts): \(handshakeResult)")
-            }
+            KLog.log("[KDEConn] Handshake attempt \(attempts): \(handshakeResult)")
             if Date() > handshakeDeadline {
                 KLog.log("[KDEConn] Handshake timed out after \(attempts) attempts")
                 break
             }
         } while handshakeResult == errSSLWouldBlock
-                || handshakeResult == -9841  // errSSLServerAuthCompleted
-                || handshakeResult == -9851  // errSSLClientCertRequested
-                || handshakeResult == errSSLPeerAuthCompleted
+                || handshakeResult == -9841
+                || handshakeResult == -9851
+                || handshakeResult == -9810
 
         guard handshakeResult == errSecSuccess else {
             KLog.log("[KDEConn] TLS handshake failed: \(handshakeResult) for \(host) after \(attempts) attempts (isTLSServer=\(isTLSServer))")
