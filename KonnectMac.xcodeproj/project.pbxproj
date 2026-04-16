@@ -11,12 +11,14 @@
 		A10000000000000000000002 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* MenuBarView.swift */; };
 		A10000000000000000000003 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* OnboardingView.swift */; };
 		A10000000000000000000004 /* PreferencesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* PreferencesView.swift */; };
+		A10000000000000000000005 /* NotificationPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* NotificationPanelView.swift */; };
 		A10000000000000000000010 /* NetworkPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* NetworkPacket.swift */; };
 		A10000000000000000000011 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* Config.swift */; };
 		A10000000000000000000012 /* Device.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* Device.swift */; };
 		A10000000000000000000014 /* DeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* DeviceManager.swift */; };
 		A10000000000000000000015 /* CertificateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* CertificateManager.swift */; };
 		A10000000000000000000016 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* Logger.swift */; };
+		A10000000000000000000017 /* NotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* NotificationStore.swift */; };
 		A10000000000000000000020 /* UDPDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* UDPDiscovery.swift */; };
 		A10000000000000000000021 /* LanServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* LanServer.swift */; };
 		A10000000000000000000022 /* KDEConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* KDEConnection.swift */; };
@@ -40,12 +42,14 @@
 		B10000000000000000000002 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		B10000000000000000000004 /* PreferencesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesView.swift; sourceTree = "<group>"; };
+		B10000000000000000000005 /* NotificationPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPanelView.swift; sourceTree = "<group>"; };
 		B10000000000000000000010 /* NetworkPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkPacket.swift; sourceTree = "<group>"; };
 		B10000000000000000000011 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* Device.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Device.swift; sourceTree = "<group>"; };
 		B10000000000000000000014 /* DeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceManager.swift; sourceTree = "<group>"; };
 		B10000000000000000000015 /* CertificateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificateManager.swift; sourceTree = "<group>"; };
 		B10000000000000000000016 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
+		B10000000000000000000017 /* NotificationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationStore.swift; sourceTree = "<group>"; };
 		B10000000000000000000020 /* UDPDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UDPDiscovery.swift; sourceTree = "<group>"; };
 		B10000000000000000000021 /* LanServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanServer.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* KDEConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KDEConnection.swift; sourceTree = "<group>"; };
@@ -99,6 +103,7 @@
 				B10000000000000000000002 /* MenuBarView.swift */,
 				B10000000000000000000003 /* OnboardingView.swift */,
 				B10000000000000000000004 /* PreferencesView.swift */,
+				B10000000000000000000005 /* NotificationPanelView.swift */,
 				E10000000000000000000003 /* Core */,
 				E10000000000000000000004 /* Network */,
 				E10000000000000000000005 /* Pairing */,
@@ -120,6 +125,7 @@
 				B10000000000000000000014 /* DeviceManager.swift */,
 				B10000000000000000000015 /* CertificateManager.swift */,
 				B10000000000000000000016 /* Logger.swift */,
+				B10000000000000000000017 /* NotificationStore.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -232,12 +238,14 @@
 				A10000000000000000000002 /* MenuBarView.swift in Sources */,
 				A10000000000000000000003 /* OnboardingView.swift in Sources */,
 				A10000000000000000000004 /* PreferencesView.swift in Sources */,
+				A10000000000000000000005 /* NotificationPanelView.swift in Sources */,
 				A10000000000000000000010 /* NetworkPacket.swift in Sources */,
 				A10000000000000000000011 /* Config.swift in Sources */,
 				A10000000000000000000012 /* Device.swift in Sources */,
 				A10000000000000000000014 /* DeviceManager.swift in Sources */,
 				A10000000000000000000015 /* CertificateManager.swift in Sources */,
 				A10000000000000000000016 /* Logger.swift in Sources */,
+				A10000000000000000000017 /* NotificationStore.swift in Sources */,
 				A10000000000000000000020 /* UDPDiscovery.swift in Sources */,
 				A10000000000000000000021 /* LanServer.swift in Sources */,
 				A10000000000000000000022 /* KDEConnection.swift in Sources */,

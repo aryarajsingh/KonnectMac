@@ -73,7 +73,9 @@ struct MenuBarView: View {
 
             Divider().padding(.vertical, 6).padding(.horizontal, 12)
 
-            // App controls
+            NotificationMenuItem {
+                AppDelegate.instance?.openNotificationPanel()
+            }
             MenuItem("Preferences…", icon: "gearshape") {
                 AppDelegate.instance?.openPreferences()
             }
@@ -303,6 +305,47 @@ private struct BatteryBadge: View {
             .foregroundColor(color)
             .accessibilityLabel("Battery at \(level)%\(charging ? ", charging" : "")")
         }
+    }
+}
+
+// MARK: - Notification Menu Item
+
+private struct NotificationMenuItem: View {
+    let action: () -> Void
+    @ObservedObject var store = NotificationStore.shared
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "bell")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
+                    if store.count > 0 {
+                        Text("\(store.count)")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.red))
+                            .offset(x: 6, y: -4)
+                    }
+                }
+                Text("Notifications")
+                    .font(.system(size: 13))
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .background(hovered ? Color.accentColor.opacity(0.12) : .clear)
+            .cornerRadius(4)
+            .contentShape(Rectangle())
+            .onHover { hovered = $0 }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
     }
 }
 
