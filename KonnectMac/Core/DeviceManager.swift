@@ -23,6 +23,7 @@ class DeviceManager: ObservableObject {
     private var willSleepObserver: NSObjectProtocol?
     private var networkDebounceTask: Task<Void, Never>?
     private var wakeRecoveryUntil: Date?
+    private var isAsleep = false
 
     private init() {}
 
@@ -51,17 +52,7 @@ class DeviceManager: ObservableObject {
 
         // Broadcast identity periodically
         broadcastIdentity()
-        broadcastTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.broadcastIdentity()
-                // During immediate post-wake recovery, mimic startup behavior:
-                // discovery + incoming connections only. Fallback direct reconnect
-                // starts after the recovery window expires.
-                if self?.inWakeRecoveryWindow == false {
-                    self?.reconnectPairedDevices()
-                }
-            }
-        }
+        startBroadcastTimer()
 
         // Monitor network changes (WiFi switch, VPN connect, etc.)
         networkMonitor = NWPathMonitor()
@@ -102,7 +93,12 @@ class DeviceManager: ObservableObject {
         ) { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                KLog.log("[DeviceManager] System going to sleep — shutting down sockets")
+                KLog.log("[DeviceManager] System going to sleep — shutting down")
+                self.isAsleep = true
+                self.broadcastTimer?.invalidate()
+                self.broadcastTimer = nil
+                self.networkDebounceTask?.cancel()
+                self.restartTransportServices(stopOnly: true)
                 for (_, conn) in self.connections {
                     let fd = conn.fd
                     if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
@@ -119,19 +115,17 @@ class DeviceManager: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 KLog.log("[DeviceManager] System woke from sleep — reconnecting")
-                CertificateManager.shared.invalidateCache()
                 self.forceDisconnectAll()
+                CertificateManager.shared.invalidateCache()
                 self.restartTransportServices()
-                // Startup-like recovery window: prioritize UDP discovery + incoming TCP.
-                // Avoid immediate direct reconnect races while WiFi is still stabilizing.
+                self.isAsleep = false
                 self.wakeRecoveryUntil = Date().addingTimeInterval(30)
+
+                self.startBroadcastTimer()
 
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 self.broadcastIdentity()
 
-                // Keep retrying every 15s until connected, up to 3 minutes post-wake.
-                // First attempts (inside recovery window) do discovery-only. After that,
-                // enable direct reconnect fallback via saved IP.
                 for attempt in 1...12 {
                     try? await Task.sleep(nanoseconds: 15_000_000_000)
                     let connected = self.connections.values.contains { $0.running && $0.tlsEstablished }
@@ -161,7 +155,20 @@ class DeviceManager: ObservableObject {
         KLog.log("[DeviceManager] Started on port \(Config.shared.tcpPort)")
     }
 
+    private func startBroadcastTimer() {
+        broadcastTimer?.invalidate()
+        broadcastTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.broadcastIdentity()
+                if self?.inWakeRecoveryWindow == false {
+                    self?.reconnectPairedDevices()
+                }
+            }
+        }
+    }
+
     func broadcastIdentity() {
+        guard !isAsleep else { return }
         let identity = NetworkPacket.identityPacket()
         udpDiscovery.broadcast(packet: identity)
 
@@ -176,7 +183,7 @@ class DeviceManager: ObservableObject {
     /// Actively reconnect to paired devices using their last known IP.
     /// Called on wake and after network changes — don't wait for the phone to hear our broadcast.
     private func reconnectPairedDevices(force: Bool = false) {
-        // During immediate wake recovery, mimic startup behavior and wait for discovery.
+        guard !isAsleep else { return }
         guard force || !inWakeRecoveryWindow else { return }
 
         for device in devices.values where Config.shared.isPaired(deviceId: device.id) {
@@ -207,6 +214,7 @@ class DeviceManager: ObservableObject {
     // MARK: - UDP Discovery Handler
 
     private func handleDiscoveredIdentity(packet: NetworkPacket, host: String) {
+        guard !isAsleep else { return }
         guard packet.type == "kdeconnect.identity" else { return }
         guard let deviceId = packet.body["deviceId"]?.value as? String else { return }
         guard deviceId != Config.shared.deviceId else { return }
@@ -261,6 +269,10 @@ class DeviceManager: ObservableObject {
     private let maxConnections = 50
 
     private func handleIncomingSocket(fd: Int32, host: String) {
+        if isAsleep {
+            Darwin.close(fd)
+            return
+        }
         // Reject if too many concurrent connections (prevents resource exhaustion)
         if connections.count >= maxConnections {
             KLog.log("[TCP] Connection limit reached (\(maxConnections)), rejecting from \(host)")

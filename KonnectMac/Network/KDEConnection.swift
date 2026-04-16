@@ -151,7 +151,6 @@ class KDEConnection {
 
     private func connectionLoop() {
         if !isIncoming {
-            // Outgoing: send identity over raw TCP, then TLS
             guard let data = cachedIdentityData else {
                 disconnect()
                 return
@@ -159,7 +158,6 @@ class KDEConnection {
             _ = rawWrite(data)
             KLog.log("[KDEConn] Sent identity to \(host):\(port)")
         } else {
-            // Incoming: read phone's identity over raw TCP
             var rawTimeout = timeval(tv_sec: 5, tv_usec: 0)
             setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &rawTimeout, socklen_t(MemoryLayout<timeval>.size))
             if let identityData = readRawLine() {
@@ -174,16 +172,30 @@ class KDEConnection {
             }
         }
 
-        // KDE Connect crossover rule: TCP server = TLS client, TCP client = TLS server
-        // For incoming connections (we are TCP server) → we are TLS client
-        // For outgoing connections (we are TCP client) → we are TLS server
+        guard running else {
+            KLog.log("[KDEConn] Aborting before TLS — connection disconnected")
+            cleanupSSL()
+            let currentFd = _fd
+            _fd = -1
+            if currentFd >= 0 { Darwin.close(currentFd) }
+            return
+        }
+
         let isTLSServer = !isIncoming
 
-        // Setup TLS
         guard setupTLS(isServer: isTLSServer) else {
             KLog.log("[KDEConn] TLS setup failed for \(host)")
             cleanupSSL()
             disconnect()
+            return
+        }
+
+        guard running else {
+            KLog.log("[KDEConn] Aborting TLS handshake — connection disconnected")
+            cleanupSSL()
+            let currentFd = _fd
+            _fd = -1
+            if currentFd >= 0 { Darwin.close(currentFd) }
             return
         }
 
