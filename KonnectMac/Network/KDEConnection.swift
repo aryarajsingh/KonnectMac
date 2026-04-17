@@ -45,7 +45,7 @@ class KDEConnection {
     var onTLSReady: (() -> Void)?
     var onPacketReceived: ((NetworkPacket) -> Void)?
     var onDisconnected: (() -> Void)?
-    // TCP keepalive handles connection liveness — no app-level pings needed
+        // TCP keepalive handles connection liveness — no app-level pings needed
 
     deinit {
         // Safety net: if connectionLoop never ran (object deallocated before queue executes),
@@ -141,11 +141,11 @@ class KDEConnection {
     private func enableKeepAlive() {
         var keepAlive: Int32 = 1
         setsockopt(_fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
-        var keepIdle: Int32 = 60  // Start probing after 60s idle (keeps NAT tables alive)
+        var keepIdle: Int32 = 120  // Start probing after 120s idle
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepIdle, socklen_t(MemoryLayout<Int32>.size))
-        var keepIntvl: Int32 = 15  // Probe every 15s
+        var keepIntvl: Int32 = 30  // Probe every 30s
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepIntvl, socklen_t(MemoryLayout<Int32>.size))
-        var keepCnt: Int32 = 4  // 4 failed probes = dead (total ~2 min to detect)
+        var keepCnt: Int32 = 5  // 5 failed probes = dead
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepCnt, socklen_t(MemoryLayout<Int32>.size))
     }
 
@@ -304,25 +304,23 @@ class KDEConnection {
             } else {
                 // readTLSPacket returned nil — timeout, skip, or error
                 let idleSincePacket = Date().timeIntervalSince(_lastPacketTime)
-                // Log every 15s of idle to track connection health
                 if Int(idleSincePacket) % 15 == 0 && idleSincePacket > 1 {
                     KLog.log("[KDEConn] Idle \(Int(idleSincePacket))s on \(host) (running=\(_running), fd=\(_fd))")
                 }
-                // TCP keepalive (60s idle, 15s probe, 4 retries) detects dead connections
-                // at the OS level. When the phone truly dies, TCP probes fail and SSLRead
-                // returns an error — which our read loop handles above.
-                // We do NOT kill the connection based on app-level idle time because
-                // a paired phone can be legitimately idle for minutes (screen off, no activity).
             }
         }
 
         _running = false
+        KLog.log("[KDEConn] Connection loop exited for \(host) (fd=\(_fd)) — cleaning up SSL")
         // SSLClose must happen BEFORE fd close so TLS close_notify is sent on valid socket
         cleanupSSL()
+        KLog.log("[KDEConn] SSL cleaned up for \(host), closing fd")
         let currentFd = _fd
         _fd = -1
         if currentFd >= 0 { Darwin.close(currentFd) }
+        KLog.log("[KDEConn] Connection fully closed for \(host), calling onDisconnected")
         DispatchQueue.main.async { [weak self] in
+            KLog.log("[KDEConn] onDisconnected firing for \(self?.host ?? "?")")
             self?.onDisconnected?()
         }
     }
@@ -374,7 +372,7 @@ class KDEConnection {
             if status == errSSLClosedGraceful || status == -9806 {
                 KLog.log("[KDEConn] Peer closed connection to \(host)")
             } else {
-                KLog.log("[KDEConn] SSLRead error: \(status) for \(host)")
+                KLog.log("[KDEConn] SSLRead error: \(status) for \(host) — disconnecting")
             }
             _running = false
             return nil
@@ -423,6 +421,7 @@ class KDEConnection {
                 }
                 if status != errSecSuccess {
                     KLog.log("[KDEConn] SSLWrite error: \(status) (wrote \(totalWritten)/\(data.count))")
+                    _running = false
                     break
                 }
             }
@@ -456,20 +455,21 @@ class KDEConnection {
         disconnectOnce = true
         pendingWriteLock.unlock()
 
-        // Only signal the connection loop to stop — do NOT close the fd here.
-        // The connectionLoop owns the fd lifecycle: it calls cleanupSSL() then closes fd.
-        // Closing fd here would race with SSL callbacks that may be mid-read/write,
-        // and the OS could reassign the fd number to a new socket before SSLClose runs.
-        // Setting sslFdPtr to -1 makes SSL callbacks fail immediately with EBADF,
-        // which causes SSLRead to return errSecIO, which exits the read loop.
+        KLog.log("[KDEConn] disconnect() called for \(host) (fd=\(_fd), wasRunning=\(_running))")
         running = false
         sslFdPtr?.pointee = -1
+        KLog.log("[KDEConn] disconnect() done for \(host), running=\(_running)")
     }
 
     private func cleanupSSL() {
         if let ctx = sslContext { SSLClose(ctx) }
-        sslFdPtr?.deallocate()
+        // Null the pointer BEFORE deallocating to prevent use-after-free:
+        // disconnect() may read sslFdPtr from the main thread concurrently.
+        // If we deallocate first then null, there's a window where sslFdPtr
+        // is non-nil but points to freed memory.
+        let ptr = sslFdPtr
         sslFdPtr = nil
+        ptr?.deallocate()
         sslContext = nil
         _tlsEstablished = false
     }
@@ -501,7 +501,7 @@ private func sslReadFunc(connection: SSLConnectionRef, data: UnsafeMutableRawPoi
     } else {
         dataLength.pointee = 0
         let err = errno
-        if err == EAGAIN || err == EWOULDBLOCK || err == ETIMEDOUT || err == EINTR {
+        if err == EAGAIN || err == EWOULDBLOCK || err == EINTR {
             return errSSLWouldBlock
         }
         return errSecIO
@@ -523,7 +523,7 @@ private func sslWriteFunc(connection: SSLConnectionRef, data: UnsafeRawPointer, 
     } else {
         dataLength.pointee = 0
         let err = errno
-        if err == EAGAIN || err == EWOULDBLOCK || err == ETIMEDOUT || err == EINTR {
+        if err == EAGAIN || err == EWOULDBLOCK || err == EINTR {
             return errSSLWouldBlock
         }
         return errSecIO

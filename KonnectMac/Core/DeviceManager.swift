@@ -18,6 +18,7 @@ class DeviceManager: ObservableObject {
     private let udpDiscovery = UDPDiscovery()
     private let tcpServer = LanServer()
     private var broadcastTimer: Timer?
+    private var healthCheckTimer: Timer?
     private var networkMonitor: NWPathMonitor?
     private var sleepWakeObserver: NSObjectProtocol?
     private var willSleepObserver: NSObjectProtocol?
@@ -97,6 +98,8 @@ class DeviceManager: ObservableObject {
                 self.isAsleep = true
                 self.broadcastTimer?.invalidate()
                 self.broadcastTimer = nil
+                self.healthCheckTimer?.invalidate()
+                self.healthCheckTimer = nil
                 self.networkDebounceTask?.cancel()
                 self.restartTransportServices(stopOnly: true)
                 for (_, conn) in self.connections {
@@ -165,6 +168,13 @@ class DeviceManager: ObservableObject {
                 }
             }
         }
+
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkConnectionHealth()
+            }
+        }
     }
 
     func broadcastIdentity() {
@@ -207,6 +217,27 @@ class DeviceManager: ObservableObject {
                 // Reconnect via device-bound outgoing flow so remoteDeviceId is known
                 // before early post-TLS packets arrive.
                 connectOutgoing(device: device, host: ip, port: Config.defaultPort)
+            }
+        }
+    }
+
+    // MARK: - Connection Health Check
+
+    /// Periodically check active connections for liveness.
+    /// If no packet has been received in 60s (battery updates, notifications, etc.)
+    /// the connection is dead — disconnect before TCP keepalive crashes the app.
+    private func checkConnectionHealth() {
+        guard !isAsleep else { return }
+        let now = Date()
+
+        for (deviceId, conn) in connections {
+            guard conn.running, conn.tlsEstablished else { continue }
+            let idle = now.timeIntervalSince(conn.lastPacketTime)
+            let deviceName = devices[deviceId]?.name ?? String(deviceId.prefix(8))
+
+            if idle > 15 {
+                KLog.log("[Health] \(deviceName): idle \(Int(idle))s — disconnecting (fd=\(conn.fd))")
+                conn.disconnect()
             }
         }
     }
@@ -761,6 +792,8 @@ class DeviceManager: ObservableObject {
 
     private func handleDisconnection(conn: KDEConnection) {
         let deviceId = conn.remoteDeviceId
+        let deviceName = deviceId.flatMap { devices[$0]?.name } ?? "unknown"
+        KLog.log("[Link] handleDisconnection called for \(deviceName) (deviceId=\(deviceId ?? "nil"), connRunning=\(conn.running), connFd=\(conn.fd))")
         if let id = deviceId {
             connectingDeviceIds.remove(id)
 
@@ -1134,6 +1167,8 @@ class DeviceManager: ObservableObject {
         // Invalidate broadcast timer
         broadcastTimer?.invalidate()
         broadcastTimer = nil
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
 
         // Remove sleep/wake observers
         if let observer = willSleepObserver {
