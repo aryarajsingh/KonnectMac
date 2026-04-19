@@ -268,23 +268,31 @@ class DeviceManager: ObservableObject {
 
         // Check if already connected or being connected.
         if tlsEstablishedDeviceIds.contains(deviceId) {
-            // Verify the connection is actually alive — after sleep/wake it may be stale
-            if let conn = connections.values.first(where: { $0.remoteDeviceId == deviceId }),
-               isSocketAlive(conn.fd) {
-                return
+            if let conn = connections.values.first(where: { $0.remoteDeviceId == deviceId }) {
+                let idle = Date().timeIntervalSince(conn.lastPacketTime)
+                if isSocketAlive(conn.fd) && idle <= 10 {
+                    return
+                }
+                KLog.log("[Discovery] Stale connection for \(deviceName) (idle \(Int(idle))s), allowing reconnect")
+                for (key, c) in connections where c.remoteDeviceId == deviceId {
+                    c.disconnect()
+                    connections.removeValue(forKey: key)
+                }
+                tlsEstablishedDeviceIds.remove(deviceId)
             }
-            // Stale connection — clean it up and allow reconnection
-            KLog.log("[Discovery] Stale connection for \(deviceName), allowing reconnect")
-            for (key, conn) in connections where conn.remoteDeviceId == deviceId {
-                conn.disconnect()
-                connections.removeValue(forKey: key)
-            }
-            tlsEstablishedDeviceIds.remove(deviceId)
         }
         if connectingDeviceIds.contains(deviceId) { return }
         for (_, conn) in connections {
             if conn.host == host && isSocketAlive(conn.fd) {
-                return
+                let idle = Date().timeIntervalSince(conn.lastPacketTime)
+                if idle <= 10 { return }
+                KLog.log("[Discovery] Stale host connection to \(host) (idle \(Int(idle))s), replacing")
+                conn.disconnect()
+                if let key = connections.first(where: { $0.value === conn })?.key {
+                    connections.removeValue(forKey: key)
+                    if let devId = conn.remoteDeviceId { tlsEstablishedDeviceIds.remove(devId) }
+                }
+                break
             }
         }
 
