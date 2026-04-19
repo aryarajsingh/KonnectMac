@@ -326,7 +326,8 @@ class DeviceManager: ObservableObject {
         // Connection replacement rules:
         // - Pending pair → accept (phone sends pair=true on new connections)
         // - Running + pre-TLS handshake → prefer incoming (break dual-outgoing races)
-        // - Running + TLS established + live socket → reject incoming
+        // - Running + TLS established + live + idle >10s → accept (peer detected dead connection, reconnecting)
+        // - Running + TLS established + live + idle ≤10s → reject incoming (healthy connection)
         // - Running + dead socket → accept incoming
         // - Not running → accept incoming
 
@@ -362,7 +363,21 @@ class DeviceManager: ObservableObject {
                         break
                     }
 
-                    KLog.log("[TCP] Rejecting incoming from \(host) — existing TLS connection fd=\(conn.fd)")
+                    // TLS established and socket looks alive, but if idle >10s the peer
+                    // has detected the dead connection and is reconnecting. isSocketAlive()
+                    // returns true for half-open TCP connections because getsockopt(SO_ERROR)
+                    // only flags errors already detected by the kernel — a peer that silently
+                    // dropped won't show up until keepalive probes fail (10-25s).
+                    let idle = Date().timeIntervalSince(conn.lastPacketTime)
+                    if idle > 10 {
+                        KLog.log("[TCP] Accepting incoming from \(host) — existing connection idle \(Int(idle))s (fd=\(conn.fd))")
+                        conn.disconnect()
+                        connections.removeValue(forKey: key)
+                        if let devId = deviceId { tlsEstablishedDeviceIds.remove(devId) }
+                        break
+                    }
+
+                    KLog.log("[TCP] Rejecting incoming from \(host) — existing TLS connection fd=\(conn.fd) (idle \(Int(idle))s)")
                     Darwin.close(fd)
                     return
                 }
