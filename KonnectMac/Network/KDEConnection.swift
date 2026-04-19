@@ -45,7 +45,6 @@ class KDEConnection {
     var onTLSReady: (() -> Void)?
     var onPacketReceived: ((NetworkPacket) -> Void)?
     var onDisconnected: (() -> Void)?
-        // TCP keepalive handles connection liveness — no app-level pings needed
 
     deinit {
         // Safety net: if connectionLoop never ran (object deallocated before queue executes),
@@ -139,13 +138,15 @@ class KDEConnection {
     }
 
     private func enableKeepAlive() {
+        var nosigpipe: Int32 = 1
+        setsockopt(_fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
         var keepAlive: Int32 = 1
         setsockopt(_fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
-        var keepIdle: Int32 = 120  // Start probing after 120s idle
+        var keepIdle: Int32 = 10
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepIdle, socklen_t(MemoryLayout<Int32>.size))
-        var keepIntvl: Int32 = 30  // Probe every 30s
+        var keepIntvl: Int32 = 5
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepIntvl, socklen_t(MemoryLayout<Int32>.size))
-        var keepCnt: Int32 = 5  // 5 failed probes = dead
+        var keepCnt: Int32 = 3
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepCnt, socklen_t(MemoryLayout<Int32>.size))
     }
 

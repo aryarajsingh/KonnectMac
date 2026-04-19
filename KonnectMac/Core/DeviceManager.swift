@@ -14,6 +14,7 @@ class DeviceManager: ObservableObject {
     private var pendingIncomingPairDevices = Set<String>() // devices showing incoming pair dialog (prevents duplicate notifications)
     private var lastPairRequestTime: [String: Date] = [:] // deviceId -> when we last sent pair request
     private var lastReconnectAttemptTime: [String: Date] = [:] // deviceId -> last outbound reconnect attempt
+    private var lastHeartbeatSent: [String: Date] = [:] // deviceId -> last heartbeat sent
 
     private let udpDiscovery = UDPDiscovery()
     private let tcpServer = LanServer()
@@ -224,8 +225,8 @@ class DeviceManager: ObservableObject {
     // MARK: - Connection Health Check
 
     /// Periodically check active connections for liveness.
-    /// If no packet has been received in 60s (battery updates, notifications, etc.)
-    /// the connection is dead — disconnect before TCP keepalive crashes the app.
+    /// Sends a battery request as heartbeat when idle > 10s (throttled to every 10s).
+    /// Disconnects connections idle > 45s — peer is not responding to heartbeats.
     private func checkConnectionHealth() {
         guard !isAsleep else { return }
         let now = Date()
@@ -235,9 +236,20 @@ class DeviceManager: ObservableObject {
             let idle = now.timeIntervalSince(conn.lastPacketTime)
             let deviceName = devices[deviceId]?.name ?? String(deviceId.prefix(8))
 
-            if idle > 15 {
+            if idle > 45 {
                 KLog.log("[Health] \(deviceName): idle \(Int(idle))s — disconnecting (fd=\(conn.fd))")
                 conn.disconnect()
+                lastHeartbeatSent.removeValue(forKey: deviceId)
+            } else if idle > 10, Config.shared.isPaired(deviceId: deviceId) {
+                let lastSent = lastHeartbeatSent[deviceId].map { now.timeIntervalSince($0) } ?? .infinity
+                if lastSent > 10 {
+                    if let device = devices[deviceId] {
+                        let heartbeat = NetworkPacket(type: "kdeconnect.battery.request", body: ["request": AnyCodable(true)])
+                        device.send(heartbeat)
+                        lastHeartbeatSent[deviceId] = now
+                        KLog.log("[Health] \(deviceName): idle \(Int(idle))s — sending heartbeat")
+                    }
+                }
             }
         }
     }
@@ -724,6 +736,7 @@ class DeviceManager: ObservableObject {
         tlsEstablishedDeviceIds.removeAll()
         connectingDeviceIds.removeAll()
         lastReconnectAttemptTime.removeAll()
+        lastHeartbeatSent.removeAll()
         for device in devices.values {
             if let clipPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
                 clipPlugin.stop()
@@ -796,6 +809,7 @@ class DeviceManager: ObservableObject {
         KLog.log("[Link] handleDisconnection called for \(deviceName) (deviceId=\(deviceId ?? "nil"), connRunning=\(conn.running), connFd=\(conn.fd))")
         if let id = deviceId {
             connectingDeviceIds.remove(id)
+            lastHeartbeatSent.removeValue(forKey: id)
 
             // Only tear down device state if THIS conn is still the active one.
             // If connections[id] already points to a different (newer) conn, a replacement
