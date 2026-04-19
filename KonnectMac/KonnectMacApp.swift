@@ -350,11 +350,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if let window = mainWindow, window.isVisible {
             window.makeKeyAndOrderFront(nil)
-            return false
-        }
-        if let window = preferencesWindow, window.isVisible {
-            window.makeKeyAndOrderFront(nil)
-            return false
+        } else {
+            openMainWindow()
         }
         return false
     }

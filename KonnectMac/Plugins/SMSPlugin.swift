@@ -74,4 +74,9 @@ class SMSPlugin: PluginProtocol {
     func resetOnDisconnect() {
         SMSStore.shared.reset()
     }
+
+    func onDeviceReady() {
+        SMSStore.shared.loadCache()
+        SMSStore.shared.requestConversationsIfNeeded()
+    }
 }

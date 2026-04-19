@@ -679,9 +679,11 @@ class DeviceManager: ObservableObject {
             }
             self.updateDeviceState(device, to: .paired)
             initializePlugins(for: device)
-            // Request battery status
             let batteryRequest = NetworkPacket(type: "kdeconnect.battery.request", body: ["request": AnyCodable(true)])
             device.send(batteryRequest)
+            if let smsPlugin = device.plugins["sms"] as? SMSPlugin {
+                smsPlugin.onDeviceReady()
+            }
         } else {
             self.updateDeviceState(device, to: .discovered)
         }

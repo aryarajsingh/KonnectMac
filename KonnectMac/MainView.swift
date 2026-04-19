@@ -170,7 +170,9 @@ struct MainView: View {
     private var contentArea: some View {
         switch windowState.selectedTab {
         case .notifications: notificationsContent
-        case .messages: messagesContent
+        case .messages:
+            messagesContent
+                .onAppear { SMSStore.shared.requestConversationsIfNeeded() }
         case .settings: settingsContent
         }
     }
@@ -228,8 +230,7 @@ struct MainView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        emptyState(icon: "message", title: "No Conversations", subtitle: "Tap to load conversations from your phone")
-                            .onTapGesture { requestConversations() }
+                        emptyState(icon: "message", title: "No Conversations", subtitle: pairedDevices.isEmpty ? "Connect a device to see messages" : "Pulling conversations from phone\u{2026}")
                     }
                 } else {
                     ScrollView {
