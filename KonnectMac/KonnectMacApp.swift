@@ -22,6 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var onboardingWindow: NSWindow?
     private var preferencesWindow: NSWindow?
     private var notificationWindow: NSWindow?
+    private var mainWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private var lockFileFD: Int32 = -1
     private var preferencesCloseObserver: NSObjectProtocol?
@@ -291,71 +292,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     @objc func openPreferences() {
-        dismissPopover()
-
-        if let existing = preferencesWindow, existing.isVisible {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate()
-            return
-        }
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 380),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "KonnectMac Preferences"
-        window.contentView = NSHostingView(rootView: PreferencesView())
-        window.center()
-        window.isReleasedWhenClosed = false
-        preferencesWindow = window
-
-        // Show dock icon while Preferences is open
-        NSApp.setActivationPolicy(.regular)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
-
-        // Watch for window close to hide dock icon
-        // Remove previous observer if any (prevents leak on repeated opens)
-        if let observer = preferencesCloseObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        preferencesCloseObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            self?.preferencesWindow = nil
-            if let observer = self?.preferencesCloseObserver {
-                NotificationCenter.default.removeObserver(observer)
-                self?.preferencesCloseObserver = nil
-            }
-            NSApp.setActivationPolicy(.accessory)
-        }
+        openMainWindow(tab: .settings)
     }
 
     func openNotificationPanel() {
-        dismissPopover()
+        openMainWindow(tab: .notifications)
+    }
 
-        if let existing = notificationWindow, existing.isVisible {
+    func openMainWindow(tab: MainWindowTab = .notifications) {
+        dismissPopover()
+        MainWindowState.shared.selectedTab = tab
+
+        if let existing = mainWindow, existing.isVisible {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate()
             return
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Notifications"
-        window.contentView = NSHostingView(rootView: NotificationPanelView())
+        window.title = "KonnectMac"
+        window.contentView = NSHostingView(rootView: MainView())
         window.center()
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 320, height: 300)
-        notificationWindow = window
+        window.minSize = NSSize(width: 650, height: 400)
+        mainWindow = window
 
         NSApp.setActivationPolicy(.regular)
         window.makeKeyAndOrderFront(nil)
@@ -363,13 +328,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         if let observer = notificationCloseObserver {
             NotificationCenter.default.removeObserver(observer)
+            notificationCloseObserver = nil
         }
         notificationCloseObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: window,
             queue: .main
         ) { [weak self] _ in
-            self?.notificationWindow = nil
+            self?.mainWindow = nil
             if let observer = self?.notificationCloseObserver {
                 NotificationCenter.default.removeObserver(observer)
                 self?.notificationCloseObserver = nil
@@ -382,11 +348,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     // When dock icon is clicked while Preferences is open, focus Preferences (don't open menu)
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if let window = preferencesWindow, window.isVisible {
+        if let window = mainWindow, window.isVisible {
             window.makeKeyAndOrderFront(nil)
             return false
         }
-        if let window = notificationWindow, window.isVisible {
+        if let window = preferencesWindow, window.isVisible {
             window.makeKeyAndOrderFront(nil)
             return false
         }

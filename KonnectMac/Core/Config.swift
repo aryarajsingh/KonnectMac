@@ -40,6 +40,7 @@ class Config: ObservableObject {
         "kdeconnect.clipboard.connect",
         "kdeconnect.findmyphone.request",
         "kdeconnect.share.request",
+        "kdeconnect.sms.messages",
         "kdeconnect.pair"
     ]
 
@@ -53,6 +54,9 @@ class Config: ObservableObject {
         "kdeconnect.clipboard.connect",
         "kdeconnect.findmyphone.request",
         "kdeconnect.share.request",
+        "kdeconnect.sms.request",
+        "kdeconnect.sms.request_conversations",
+        "kdeconnect.sms.request_conversation",
         "kdeconnect.pair"
     ]
 

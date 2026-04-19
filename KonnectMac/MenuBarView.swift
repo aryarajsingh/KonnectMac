@@ -18,6 +18,9 @@ struct MenuBarView: View {
             if !paired.isEmpty {
                 ForEach(Array(paired), id: \.id) { device in
                     DeviceCard(device: device)
+                        .onTapGesture {
+                            AppDelegate.instance?.openMainWindow()
+                        }
                 }
             }
 
@@ -73,11 +76,11 @@ struct MenuBarView: View {
 
             Divider().padding(.vertical, 6).padding(.horizontal, 12)
 
-            NotificationMenuItem {
-                AppDelegate.instance?.openNotificationPanel()
+            MenuItem("Open KonnectMac", icon: "rectangle") {
+                AppDelegate.instance?.openMainWindow()
             }
-            MenuItem("Preferences…", icon: "gearshape") {
-                AppDelegate.instance?.openPreferences()
+            MenuItem("Preferences\u{2026}", icon: "gearshape") {
+                AppDelegate.instance?.openMainWindow(tab: .settings)
             }
             MenuItem("Quit KonnectMac", icon: "power") {
                 NSApp.terminate(nil)

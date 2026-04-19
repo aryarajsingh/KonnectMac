@@ -9,12 +9,14 @@
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* KonnectMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* KonnectMacApp.swift */; };
 		A10000000000000000000002 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* MenuBarView.swift */; };
+		A869B71B2A424FC7B870BCE8 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 910B6BCFA91447EEA5C68247 /* MainView.swift */; };
 		A10000000000000000000003 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* OnboardingView.swift */; };
 		A10000000000000000000004 /* PreferencesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* PreferencesView.swift */; };
 		A10000000000000000000005 /* NotificationPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* NotificationPanelView.swift */; };
 		A10000000000000000000010 /* NetworkPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* NetworkPacket.swift */; };
 		A10000000000000000000011 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* Config.swift */; };
 		A10000000000000000000012 /* Device.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* Device.swift */; };
+		B07CD21E8EA241EE9F2B6767 /* SMSStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBAD032279714103AB4AE3C2 /* SMSStore.swift */; };
 		A10000000000000000000014 /* DeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* DeviceManager.swift */; };
 		A10000000000000000000015 /* CertificateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* CertificateManager.swift */; };
 		A10000000000000000000016 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* Logger.swift */; };
@@ -26,6 +28,7 @@
 		A10000000000000000000030 /* PairingHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000030 /* PairingHandler.swift */; };
 		A10000000000000000000040 /* PluginProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000040 /* PluginProtocol.swift */; };
 		A10000000000000000000041 /* PingPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000041 /* PingPlugin.swift */; };
+		F3E86B5104644560948FA61D /* SMSPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F41C83DC80A453886E92B78 /* SMSPlugin.swift */; };
 		A10000000000000000000042 /* BatteryPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000042 /* BatteryPlugin.swift */; };
 		A10000000000000000000043 /* NotificationPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000043 /* NotificationPlugin.swift */; };
 		A10000000000000000000044 /* TelephonyPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000044 /* TelephonyPlugin.swift */; };
@@ -40,12 +43,14 @@
 		C10000000000000000000001 /* KonnectMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KonnectMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000001 /* KonnectMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KonnectMacApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		910B6BCFA91447EEA5C68247 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		B10000000000000000000004 /* PreferencesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesView.swift; sourceTree = "<group>"; };
 		B10000000000000000000005 /* NotificationPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPanelView.swift; sourceTree = "<group>"; };
 		B10000000000000000000010 /* NetworkPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkPacket.swift; sourceTree = "<group>"; };
 		B10000000000000000000011 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* Device.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Device.swift; sourceTree = "<group>"; };
+		BBAD032279714103AB4AE3C2 /* SMSStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SMSStore.swift; sourceTree = "<group>"; };
 		B10000000000000000000014 /* DeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceManager.swift; sourceTree = "<group>"; };
 		B10000000000000000000015 /* CertificateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificateManager.swift; sourceTree = "<group>"; };
 		B10000000000000000000016 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
@@ -57,6 +62,7 @@
 		B10000000000000000000030 /* PairingHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingHandler.swift; sourceTree = "<group>"; };
 		B10000000000000000000040 /* PluginProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginProtocol.swift; sourceTree = "<group>"; };
 		B10000000000000000000041 /* PingPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PingPlugin.swift; sourceTree = "<group>"; };
+		4F41C83DC80A453886E92B78 /* SMSPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SMSPlugin.swift; sourceTree = "<group>"; };
 		B10000000000000000000042 /* BatteryPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryPlugin.swift; sourceTree = "<group>"; };
 		B10000000000000000000043 /* NotificationPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPlugin.swift; sourceTree = "<group>"; };
 		B10000000000000000000044 /* TelephonyPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelephonyPlugin.swift; sourceTree = "<group>"; };
@@ -101,6 +107,7 @@
 			children = (
 				B10000000000000000000001 /* KonnectMacApp.swift */,
 				B10000000000000000000002 /* MenuBarView.swift */,
+				910B6BCFA91447EEA5C68247 /* MainView.swift */,
 				B10000000000000000000003 /* OnboardingView.swift */,
 				B10000000000000000000004 /* PreferencesView.swift */,
 				B10000000000000000000005 /* NotificationPanelView.swift */,
@@ -122,6 +129,7 @@
 				B10000000000000000000010 /* NetworkPacket.swift */,
 				B10000000000000000000011 /* Config.swift */,
 				B10000000000000000000012 /* Device.swift */,
+				BBAD032279714103AB4AE3C2 /* SMSStore.swift */,
 				B10000000000000000000014 /* DeviceManager.swift */,
 				B10000000000000000000015 /* CertificateManager.swift */,
 				B10000000000000000000016 /* Logger.swift */,
@@ -154,6 +162,7 @@
 			children = (
 				B10000000000000000000040 /* PluginProtocol.swift */,
 				B10000000000000000000041 /* PingPlugin.swift */,
+				4F41C83DC80A453886E92B78 /* SMSPlugin.swift */,
 				B10000000000000000000042 /* BatteryPlugin.swift */,
 				B10000000000000000000043 /* NotificationPlugin.swift */,
 				B10000000000000000000044 /* TelephonyPlugin.swift */,
@@ -236,12 +245,14 @@
 			files = (
 				A10000000000000000000001 /* KonnectMacApp.swift in Sources */,
 				A10000000000000000000002 /* MenuBarView.swift in Sources */,
+				A869B71B2A424FC7B870BCE8 /* MainView.swift in Sources */,
 				A10000000000000000000003 /* OnboardingView.swift in Sources */,
 				A10000000000000000000004 /* PreferencesView.swift in Sources */,
 				A10000000000000000000005 /* NotificationPanelView.swift in Sources */,
 				A10000000000000000000010 /* NetworkPacket.swift in Sources */,
 				A10000000000000000000011 /* Config.swift in Sources */,
 				A10000000000000000000012 /* Device.swift in Sources */,
+				B07CD21E8EA241EE9F2B6767 /* SMSStore.swift in Sources */,
 				A10000000000000000000014 /* DeviceManager.swift in Sources */,
 				A10000000000000000000015 /* CertificateManager.swift in Sources */,
 				A10000000000000000000016 /* Logger.swift in Sources */,
@@ -253,6 +264,7 @@
 				A10000000000000000000030 /* PairingHandler.swift in Sources */,
 				A10000000000000000000040 /* PluginProtocol.swift in Sources */,
 				A10000000000000000000041 /* PingPlugin.swift in Sources */,
+				F3E86B5104644560948FA61D /* SMSPlugin.swift in Sources */,
 				A10000000000000000000042 /* BatteryPlugin.swift in Sources */,
 				A10000000000000000000043 /* NotificationPlugin.swift in Sources */,
 				A10000000000000000000044 /* TelephonyPlugin.swift in Sources */,

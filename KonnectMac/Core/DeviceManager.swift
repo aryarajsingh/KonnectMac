@@ -771,6 +771,9 @@ class DeviceManager: ObservableObject {
             if let batPlugin = device.plugins["battery"] as? BatteryPlugin {
                 batPlugin.resetOnDisconnect()
             }
+            if let smsPlugin = device.plugins["sms"] as? SMSPlugin {
+                smsPlugin.resetOnDisconnect()
+            }
             device.kdeConn = nil
             if device.connectionState == .paired || device.connectionState == .discovered {
                 updateDeviceState(device, to: .disconnected)
@@ -1132,6 +1135,7 @@ class DeviceManager: ObservableObject {
         }
         if enabled.contains("findmyphone") { device.plugins["findmyphone"] = FindMyPhonePlugin(device: device) }
         if enabled.contains("share") { device.plugins["share"] = SharePlugin(device: device) }
+        if enabled.contains("sms") { device.plugins["sms"] = SMSPlugin(device: device) }
 
         // Request all notifications
         let notifRequest = NetworkPacket(type: "kdeconnect.notification.request", body: ["request": AnyCodable(true)])
