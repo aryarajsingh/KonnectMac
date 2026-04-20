@@ -219,8 +219,8 @@ class SMSStore: ObservableObject {
 
     private func extractSender(from body: String) -> String {
         let patterns: [(String, (String) -> String)] = [
-            ("\\[([^\\]]+)\\]", { $0 }),          // [Aliexpress] code -> Aliexpress
-            ("^([A-Za-z0-9]+):\\s", { $0 }),       // Claro: Tu saldo -> Claro
+            ("\\[([^\\]]+)\\]", { $0 }),
+            ("^([A-Za-z0-9]+):\\s", { $0 }),
             ("^(\\S+?)\\s+(?:Product|Order|Recall|Tus|Tu código|codigo)", { $0 }),
         ]
         for (pattern, extract) in patterns {
@@ -231,8 +231,8 @@ class SMSStore: ObservableObject {
                 if sender.count >= 2 && sender.count <= 30 { return sender }
             }
         }
-        let words = body.prefix(20).components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+        let words = body.prefix(30).components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
         if let first = words.first, first.count >= 2 { return first }
-        return body.prefix(15).trimmingCharacters(in: .whitespaces)
+        return "Unknown"
     }
 }

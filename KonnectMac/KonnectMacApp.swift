@@ -29,6 +29,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var notificationCloseObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        signal(SIGPIPE, SIG_IGN)
+
         // Single instance enforcement via lock file
         if !acquireLockFile() {
             let alert = NSAlert()

@@ -39,3 +39,6 @@ CLAUDE.md
 .claude/
 
 *.pkg
+
+# Dev docs
+DEV.md

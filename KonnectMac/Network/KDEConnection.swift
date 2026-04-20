@@ -88,6 +88,9 @@ class KDEConnection {
             self._fd = socket(AF_INET, SOCK_STREAM, 0)
             guard self._fd >= 0 else { return }
 
+            var nosigpipe: Int32 = 1
+            setsockopt(self._fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
+
             var nodelay: Int32 = 1
             setsockopt(self._fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
 
@@ -385,8 +388,8 @@ class KDEConnection {
             if let packet = NetworkPacket.deserialize(from: line) {
                 return packet
             }
-            // Invalid JSON — skip this line, don't kill connection
-            KLog.log("[KDEConn] Skipped invalid packet (\(line.count) bytes)")
+            let preview = String(data: line.prefix(100), encoding: .utf8) ?? "(binary)"
+            KLog.log("[KDEConn] Skipped invalid packet (\(line.count) bytes): \(preview)")
         }
 
         return nil
