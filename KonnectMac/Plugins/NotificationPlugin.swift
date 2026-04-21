@@ -277,6 +277,7 @@ class NotificationPlugin: PluginProtocol {
             Self.shownNotificationIds.remove(notifId)
             Self.shownNotificationOrder.removeAll { $0 == notifId }
             Self.notificationContentHash.removeValue(forKey: notifId)
+            NotificationStore.shared.remove(id: notifId)
             return
         }
 
@@ -352,10 +353,10 @@ class NotificationPlugin: PluginProtocol {
         // Check icon cache first, then fallback to SF Symbol icons for known apps
         if let cachedPath = Self.iconCache[packageName] {
             KLog.log("[Notification] Cache hit for \(packageName)")
-            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: cachedPath, replyId: replyId)
+            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: cachedPath, replyId: replyId, packageName: packageName)
         } else if let fallbackPath = Self.fallbackIcon(for: packageName) {
             KLog.log("[Notification] Using fallback icon for \(packageName)")
-            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: fallbackPath, replyId: replyId)
+            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: fallbackPath, replyId: replyId, packageName: packageName)
 
             // Still try to download the real icon if available (will replace fallback on next notification)
             if hasPayload, let port = payloadPort, Self.pendingIconDownloads[packageName] == nil, !Self.emailPackages.contains(packageName) {
@@ -369,7 +370,7 @@ class NotificationPlugin: PluginProtocol {
             }
         } else if hasPayload, let port = payloadPort {
             // Post notification IMMEDIATELY without icon — don't make user wait for download
-            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
+            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId, packageName: packageName)
 
             // Download icon in background. If successful, re-post with icon (same ID = in-place update)
             if Self.pendingIconDownloads[packageName] == nil {
@@ -381,13 +382,14 @@ class NotificationPlugin: PluginProtocol {
                 let capturedText = text
                 let capturedTicker = ticker
                 let capturedReplyId = replyId
+                let capturedPackageName = packageName
                 downloadIcon(host: (device.kdeConn?.host ?? ""), port: port, expectedSize: Int(packet.payloadSize ?? 0), packageName: packageName, storedCertData: storedCert) { [weak self] iconPath in
                     Task { @MainActor in
                         // ALWAYS clear pending state — even on failure — so future notifications can retry
                         Self.pendingIconDownloads.removeValue(forKey: packageName)
                         // Re-post notification with icon (same ID = in-place update)
                         if let iconPath = iconPath {
-                            self?.postNotification(id: capturedNotifId, appName: capturedAppName, title: capturedTitle, text: capturedText, ticker: capturedTicker, iconPath: iconPath, replyId: capturedReplyId)
+                            self?.postNotification(id: capturedNotifId, appName: capturedAppName, title: capturedTitle, text: capturedText, ticker: capturedTicker, iconPath: iconPath, replyId: capturedReplyId, packageName: capturedPackageName)
                         } else {
                             KLog.log("[Notification] Icon download failed for \(packageName), will retry on next notification")
                         }
@@ -395,7 +397,7 @@ class NotificationPlugin: PluginProtocol {
                 }
             }
         } else {
-            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
+            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId, packageName: packageName)
         }
     }
 
@@ -403,7 +405,13 @@ class NotificationPlugin: PluginProtocol {
         return Self.iconCache[packageName]
     }
 
-    private func postNotification(id: String, appName: String, title: String, text: String, ticker: String, iconPath: String?, replyId: String?) {
+    private func postNotification(id: String, appName: String, title: String, text: String, ticker: String, iconPath: String?, replyId: String?, packageName: String) {
+        NotificationStore.shared.add(
+            id: id, appName: appName, title: title, text: text, ticker: ticker,
+            packageName: packageName, deviceId: device.id, deviceName: device.name,
+            iconPath: iconPath, replyId: replyId
+        )
+
         let content = UNMutableNotificationContent()
         content.title = appName
         if !title.isEmpty && title != appName {

@@ -45,6 +45,14 @@ class CertificateManager {
         return identity
     }
 
+    func invalidateCache() {
+        lock.lock()
+        if let kc = appKeychain { SecKeychainDelete(kc) }
+        cachedIdentity = nil
+        appKeychain = nil
+        lock.unlock()
+    }
+
     func identityExists() -> Bool {
         FileManager.default.fileExists(atPath: p12Path.path)
     }

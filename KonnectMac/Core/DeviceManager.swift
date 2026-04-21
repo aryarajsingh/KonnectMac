@@ -13,15 +13,29 @@ class DeviceManager: ObservableObject {
     @Published var pendingPairRequests = Set<String>() // devices WE sent pair request to
     private var pendingIncomingPairDevices = Set<String>() // devices showing incoming pair dialog (prevents duplicate notifications)
     private var lastPairRequestTime: [String: Date] = [:] // deviceId -> when we last sent pair request
+    private var lastReconnectAttemptTime: [String: Date] = [:] // deviceId -> last outbound reconnect attempt
+    private var lastHeartbeatSent: [String: Date] = [:] // deviceId -> last heartbeat sent
+    private var consecutiveTLSFailures: [String: Int] = [:] // deviceId -> count of consecutive TLS failures
 
     private let udpDiscovery = UDPDiscovery()
     private let tcpServer = LanServer()
     private var broadcastTimer: Timer?
+    private var healthCheckTimer: Timer?
     private var networkMonitor: NWPathMonitor?
     private var sleepWakeObserver: NSObjectProtocol?
+    private var willSleepObserver: NSObjectProtocol?
     private var networkDebounceTask: Task<Void, Never>?
+    private var wakeRecoveryUntil: Date?
+    private var isAsleep = false
 
     private init() {}
+
+    private var inWakeRecoveryWindow: Bool {
+        if let until = wakeRecoveryUntil {
+            return Date() < until
+        }
+        return false
+    }
 
     func start() {
         KLog.log("[DeviceManager] Starting...")
@@ -39,13 +53,12 @@ class DeviceManager: ObservableObject {
         }
         udpDiscovery.startListening(port: Config.shared.tcpPort)
 
+        // Load paired devices BEFORE broadcasting, so Tailscale pre-assign can find them
+        loadPairedDevices()
+
         // Broadcast identity periodically
         broadcastIdentity()
-        broadcastTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.broadcastIdentity()
-            }
-        }
+        startBroadcastTimer()
 
         // Monitor network changes (WiFi switch, VPN connect, etc.)
         networkMonitor = NWPathMonitor()
@@ -69,7 +82,9 @@ class DeviceManager: ObservableObject {
 
                     if path.status == .satisfied {
                         self.broadcastIdentity()
-                        self.reconnectPairedDevices()
+                        if !self.inWakeRecoveryWindow {
+                            self.reconnectPairedDevices()
+                        }
                     }
                 }
             }
@@ -77,6 +92,29 @@ class DeviceManager: ObservableObject {
         networkMonitor?.start(queue: DispatchQueue(label: "network-monitor"))
 
         // Observe sleep/wake to force immediate reconnection on wake
+        willSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                KLog.log("[DeviceManager] System going to sleep — shutting down")
+                self.isAsleep = true
+                self.broadcastTimer?.invalidate()
+                self.broadcastTimer = nil
+                self.healthCheckTimer?.invalidate()
+                self.healthCheckTimer = nil
+                self.networkDebounceTask?.cancel()
+                self.restartTransportServices(stopOnly: true)
+                for (_, conn) in self.connections {
+                    let fd = conn.fd
+                    if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
+                    conn.disconnect()
+                }
+            }
+        }
+
         sleepWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -84,49 +122,130 @@ class DeviceManager: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
-                KLog.log("[DeviceManager] System woke from sleep — pruning stale connections and reconnecting")
-                self.disconnectNonReachableConnections()
+                KLog.log("[DeviceManager] System woke from sleep — reconnecting")
+                self.forceDisconnectAll()
+                CertificateManager.shared.invalidateCache()
+                self.restartTransportServices()
+                self.isAsleep = false
+                self.wakeRecoveryUntil = Date().addingTimeInterval(30)
+
+                self.startBroadcastTimer()
+
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 self.broadcastIdentity()
-                self.reconnectPairedDevices()
+
+                for attempt in 1...12 {
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    let connected = self.connections.values.contains { $0.running && $0.tlsEstablished }
+                    if connected {
+                        self.wakeRecoveryUntil = nil
+                        break
+                    }
+
+                    if self.inWakeRecoveryWindow {
+                        KLog.log("[DeviceManager] Wake retry \(attempt) — discovery phase")
+                        self.broadcastIdentity()
+                        continue
+                    }
+
+                    KLog.log("[DeviceManager] Wake retry \(attempt) — fallback direct reconnect")
+                    self.broadcastIdentity()
+                    self.reconnectPairedDevices(force: true)
+                }
+
+                self.wakeRecoveryUntil = nil
             }
         }
-
-        // Load paired devices
-        loadPairedDevices()
 
         KLog.log("[DeviceManager] Started on port \(Config.shared.tcpPort)")
     }
 
+    private func startBroadcastTimer() {
+        broadcastTimer?.invalidate()
+        broadcastTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.broadcastIdentity()
+                if self?.inWakeRecoveryWindow == false {
+                    self?.reconnectPairedDevices()
+                }
+            }
+        }
+
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkConnectionHealth()
+            }
+        }
+    }
+
     func broadcastIdentity() {
+        guard !isAsleep else { return }
         let identity = NetworkPacket.identityPacket()
         udpDiscovery.broadcast(packet: identity)
 
-        // Direct connect to Tailscale/VPN IP — full KDEConnection, not fire-and-close
+        // Direct connect to Tailscale/VPN IP — only for non-LAN IPs (100.x.x.x etc.)
+        // Skip if the phone is already connected (via WiFi/LAN) to avoid duplicate
+        // connections that waste resources and get dropped.
         let tailscaleIP = Config.shared.tailscaleIP
-        if !tailscaleIP.isEmpty {
-            connectDirectToHost(host: tailscaleIP, port: Config.defaultPort)
+        if !tailscaleIP.isEmpty && tailscaleIP.hasPrefix("100.") {
+            let phoneConnected = devices.values.contains {
+                $0.type == "phone" && $0.connectionState == .paired
+            }
+            if !phoneConnected {
+                connectDirectToHost(host: tailscaleIP, port: Config.defaultPort)
+            }
         }
     }
 
     /// Actively reconnect to paired devices using their last known IP.
     /// Called on wake and after network changes — don't wait for the phone to hear our broadcast.
-    private func reconnectPairedDevices() {
+    private func reconnectPairedDevices(force: Bool = false) {
+        guard !isAsleep else { return }
+        guard force || !inWakeRecoveryWindow else { return }
+
         for device in devices.values where Config.shared.isPaired(deviceId: device.id) {
             // Skip if already connected
             if let conn = connections[device.id], conn.running {
                 continue
             }
+
+            // Throttle reconnect attempts with exponential backoff on TLS failures.
+            // After wake, multiple triggers can overlap (wake task, path monitor,
+            // broadcast timer). Consecutive TLS failures (phone locked/Dozing) use
+            // increasing intervals: 20s, 40s, 80s, 160s, up to 300s max.
+            let failures = consecutiveTLSFailures[device.id] ?? 0
+            let minInterval: TimeInterval = failures == 0 ? 20 : min(20 * pow(2.0, Double(failures - 1)), 300)
+            if let lastAttempt = lastReconnectAttemptTime[device.id],
+               Date().timeIntervalSince(lastAttempt) < minInterval {
+                continue
+            }
+
             // Try last known IP
             if let ip = Config.shared.savedDeviceIP(for: device.id), !ip.isEmpty {
+                lastReconnectAttemptTime[device.id] = Date()
                 KLog.log("[DeviceManager] Reconnecting to \(device.name) at \(ip)")
-                connectDirectToHost(host: ip, port: Config.defaultPort)
+                // Reconnect via device-bound outgoing flow so remoteDeviceId is known
+                // before early post-TLS packets arrive.
+                connectOutgoing(device: device, host: ip, port: Config.defaultPort)
             }
         }
+    }
+
+    // MARK: - Connection Health Check
+
+    /// Periodically check active connections for liveness.
+    /// No app-level health check. TCP keepalive (idle=10s, interval=5s, count=3)
+    /// detects dead peers in ~25s. KDE Connect desktop does the same — no health timer.
+    /// When the phone is locked/Dozing, battery.request responses are delayed,
+    /// so any idle-timeout-based disconnect causes spurious reconnects.
+    private func checkConnectionHealth() {
     }
 
     // MARK: - UDP Discovery Handler
 
     private func handleDiscoveredIdentity(packet: NetworkPacket, host: String) {
+        guard !isAsleep else { return }
         guard packet.type == "kdeconnect.identity" else { return }
         guard let deviceId = packet.body["deviceId"]?.value as? String else { return }
         guard deviceId != Config.shared.deviceId else { return }
@@ -136,13 +255,32 @@ class DeviceManager: ObservableObject {
         let tcpPort = packet.body["tcpPort"]?.value as? Int ?? Int(Config.minPort)
 
         // Check if already connected or being connected.
-        // Don't require conn.running — an incoming connection may not be running yet
-        // (async queue not started) but still blocks a redundant outgoing attempt.
-        if tlsEstablishedDeviceIds.contains(deviceId) { return }
+        if tlsEstablishedDeviceIds.contains(deviceId) {
+            if let conn = connections.values.first(where: { $0.remoteDeviceId == deviceId }) {
+                let idle = Date().timeIntervalSince(conn.lastPacketTime)
+                if isSocketAlive(conn.fd) && idle <= 10 {
+                    return
+                }
+                KLog.log("[Discovery] Stale connection for \(deviceName) (idle \(Int(idle))s), allowing reconnect")
+                for (key, c) in connections where c.remoteDeviceId == deviceId {
+                    c.disconnect()
+                    connections.removeValue(forKey: key)
+                }
+                tlsEstablishedDeviceIds.remove(deviceId)
+            }
+        }
         if connectingDeviceIds.contains(deviceId) { return }
         for (_, conn) in connections {
-            if conn.remoteDeviceId == deviceId || conn.host == host {
-                return
+            if conn.host == host && isSocketAlive(conn.fd) {
+                let idle = Date().timeIntervalSince(conn.lastPacketTime)
+                if idle <= 10 { return }
+                KLog.log("[Discovery] Stale host connection to \(host) (idle \(Int(idle))s), replacing")
+                conn.disconnect()
+                if let key = connections.first(where: { $0.value === conn })?.key {
+                    connections.removeValue(forKey: key)
+                    if let devId = conn.remoteDeviceId { tlsEstablishedDeviceIds.remove(devId) }
+                }
+                break
             }
         }
 
@@ -170,6 +308,10 @@ class DeviceManager: ObservableObject {
     private let maxConnections = 50
 
     private func handleIncomingSocket(fd: Int32, host: String) {
+        if isAsleep {
+            Darwin.close(fd)
+            return
+        }
         // Reject if too many concurrent connections (prevents resource exhaustion)
         if connections.count >= maxConnections {
             KLog.log("[TCP] Connection limit reached (\(maxConnections)), rejecting from \(host)")
@@ -179,16 +321,18 @@ class DeviceManager: ObservableObject {
 
         // Connection replacement rules:
         // - Pending pair → accept (phone sends pair=true on new connections)
-        // - Paired + running → REJECT (TCP keepalive detects dead connections; idle is normal)
-        //   This applies for SAME host AND SAME device on different host (WiFi vs Tailscale)
-        // - Unpaired + running → accept (phone is still discovering, may have replaced its socket)
-        // - Not running → accept (connection is dead)
+        // - Running + pre-TLS handshake → prefer incoming (break dual-outgoing races)
+        // - Running + TLS established + live + idle >10s → accept (peer detected dead connection, reconnecting)
+        // - Running + TLS established + live + idle ≤10s → reject incoming (healthy connection)
+        // - Running + dead socket → accept incoming
+        // - Not running → accept incoming
 
         for (key, conn) in connections {
-            // Match by host (same network path) OR by device ID (same device, different network)
+            // Match by host: if the incoming is from the same IP as an existing connection,
+            // evaluate replacement rules. We can't match by deviceId for incoming connections
+            // since identity hasn't arrived yet.
             let sameHost = conn.host == host
-            let sameDevice = conn.remoteDeviceId != nil && tlsEstablishedDeviceIds.contains(conn.remoteDeviceId!)
-            guard sameHost || sameDevice else { continue }
+            guard sameHost else { continue }
 
             let deviceId = conn.remoteDeviceId
             let hasPendingPair = deviceId.map { pendingPairRequests.contains($0) } ?? false
@@ -204,15 +348,37 @@ class DeviceManager: ObservableObject {
             }
 
             if conn.running {
-                if isPaired {
-                    // Paired + running → keep the existing connection. Period.
-                    // TCP keepalive will detect if it's truly dead.
-                    // This also prevents WiFi↔Tailscale flip-flopping.
+                if isSocketAlive(conn.fd) {
+                    if !conn.tlsEstablished {
+                        // Existing connection is alive but still handshaking (common right
+                        // after wake when both sides initiate). Prefer incoming to avoid
+                        // both sides ending up as TLS server on parallel outgoing sockets.
+                        KLog.log("[TCP] Replacing in-progress connection from \(host) with incoming (fd=\(conn.fd))")
+                        conn.disconnect()
+                        connections.removeValue(forKey: key)
+                        if let devId = deviceId { tlsEstablishedDeviceIds.remove(devId) }
+                        break
+                    }
+
+                    // TLS established and socket looks alive, but if idle >10s the peer
+                    // has detected the dead connection and is reconnecting. isSocketAlive()
+                    // returns true for half-open TCP connections because getsockopt(SO_ERROR)
+                    // only flags errors already detected by the kernel — a peer that silently
+                    // dropped won't show up until keepalive probes fail (10-25s).
+                    let idle = Date().timeIntervalSince(conn.lastPacketTime)
+                    if idle > 10 {
+                        KLog.log("[TCP] Accepting incoming from \(host) — existing connection idle \(Int(idle))s (fd=\(conn.fd))")
+                        conn.disconnect()
+                        connections.removeValue(forKey: key)
+                        if let devId = deviceId { tlsEstablishedDeviceIds.remove(devId) }
+                        break
+                    }
+
+                    KLog.log("[TCP] Rejecting incoming from \(host) — existing TLS connection fd=\(conn.fd) (idle \(Int(idle))s)")
                     Darwin.close(fd)
                     return
                 }
-                // Unpaired + running → accept (phone reconnects during discovery)
-                KLog.log("[TCP] Replacing unpaired connection from \(host)")
+                KLog.log("[TCP] Replacing stale connection from \(host) (fd=\(conn.fd), paired=\(isPaired))")
                 conn.disconnect()
                 connections.removeValue(forKey: key)
                 if let devId = deviceId { tlsEstablishedDeviceIds.remove(devId) }
@@ -348,18 +514,49 @@ class DeviceManager: ObservableObject {
     private func connectDirectToHost(host: String, port: UInt16) {
         // Already have a running connection to this host? Skip.
         for (_, conn) in connections {
-            if conn.host == host && conn.running { return }
+            if conn.host == host && conn.running {
+                KLog.log("[DirectConnect] Skipped \(host) — already connected")
+                return
+            }
+        }
+
+        // Pre-assign deviceId for Tailscale/VPN connections where the phone won't
+        // send its identity. Strategy: find a paired phone-type device that isn't
+        // already connected via another route.
+        let preAssignedDeviceId: String?
+        let pairedPhones = devices.values.filter {
+            Config.shared.isPaired(deviceId: $0.id) && $0.type == "phone"
+        }
+        if pairedPhones.count == 1 {
+            let phone = pairedPhones[0]
+            // Only pre-assign if this phone isn't already connected
+            if let existingConn = connections[phone.id], existingConn.running, existingConn.tlsEstablished {
+                preAssignedDeviceId = nil
+            } else {
+                preAssignedDeviceId = phone.id
+            }
+        } else {
+            preAssignedDeviceId = nil
         }
 
         let tempKey = "direct_\(host)"
 
         // Already connecting? Skip.
-        if connectingDeviceIds.contains(tempKey) { return }
+        if connectingDeviceIds.contains(tempKey) {
+            KLog.log("[DirectConnect] Skipped \(host) — connect already in progress")
+            return
+        }
         connectingDeviceIds.insert(tempKey)
 
         KLog.log("[DirectConnect] Initiating full connection to \(host):\(port)")
 
         let conn = KDEConnection(host: host, port: port, isIncoming: false)
+
+        // Pre-assign deviceId if we only have one paired device (Tailscale/VPN)
+        if let devId = preAssignedDeviceId {
+            conn.remoteDeviceId = devId
+            KLog.log("[DirectConnect] Pre-assigned deviceId \(devId) for \(host)")
+        }
 
         conn.cachedIdentityData = NetworkPacket.identityPacket().serialize()
         connections[tempKey] = conn
@@ -425,6 +622,12 @@ class DeviceManager: ObservableObject {
                 // onIdentityReceived will call finalizeConnection when it arrives
                 return
             }
+            // Re-key from temp to deviceId if not already done
+            if self.connections[tempKey] === conn {
+                self.connections.removeValue(forKey: tempKey)
+                self.connections[deviceId] = conn
+                KLog.log("[DirectConnect] Re-keyed \(tempKey) → \(deviceId) on TLS ready")
+            }
             self.finalizeConnection(deviceId: deviceId, conn: conn)
         }
 
@@ -471,6 +674,8 @@ class DeviceManager: ObservableObject {
 
         tlsEstablishedDeviceIds.insert(deviceId)
         connectingDeviceIds.remove(deviceId)
+        lastReconnectAttemptTime.removeValue(forKey: deviceId)
+        consecutiveTLSFailures.removeValue(forKey: deviceId)
         connections[deviceId] = conn
 
         let device = getOrCreateDevice(id: deviceId, name: Config.shared.savedDeviceName(for: deviceId) ?? deviceId)
@@ -495,9 +700,11 @@ class DeviceManager: ObservableObject {
             }
             self.updateDeviceState(device, to: .paired)
             initializePlugins(for: device)
-            // Request battery status
             let batteryRequest = NetworkPacket(type: "kdeconnect.battery.request", body: ["request": AnyCodable(true)])
             device.send(batteryRequest)
+            if let smsPlugin = device.plugins["sms"] as? SMSPlugin {
+                smsPlugin.onDeviceReady()
+            }
         } else {
             self.updateDeviceState(device, to: .discovered)
         }
@@ -562,6 +769,56 @@ class DeviceManager: ObservableObject {
         }
     }
 
+    /// Force-disconnect ALL connections and clear internal state.
+    /// Used on wake to ensure a clean slate — after sleep,
+    /// TCP connections are stale regardless of subnet reachability.
+    private func forceDisconnectAll() {
+        for (_, conn) in connections {
+            let fd = conn.fd
+            if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
+            conn.disconnect()
+        }
+        connections.removeAll()
+        tlsEstablishedDeviceIds.removeAll()
+        connectingDeviceIds.removeAll()
+        lastReconnectAttemptTime.removeAll()
+        lastHeartbeatSent.removeAll()
+        for device in devices.values {
+            if let clipPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
+                clipPlugin.stop()
+            }
+            if let telPlugin = device.plugins["telephony"] as? TelephonyPlugin {
+                if telPlugin.hasActiveCall { telPlugin.onCallEnded() }
+                telPlugin.resetOnDisconnect()
+            }
+            if let batPlugin = device.plugins["battery"] as? BatteryPlugin {
+                batPlugin.resetOnDisconnect()
+            }
+            if let smsPlugin = device.plugins["sms"] as? SMSPlugin {
+                smsPlugin.resetOnDisconnect()
+            }
+            device.kdeConn = nil
+            if device.connectionState == .paired || device.connectionState == .discovered {
+                updateDeviceState(device, to: .disconnected)
+            }
+        }
+    }
+
+    /// Recreate UDP and TCP sockets after sleep/wake.
+    /// macOS can leave listening sockets unusable across suspend/resume,
+    /// so reconnect logic needs fresh transport endpoints before broadcasting.
+    private func restartTransportServices(stopOnly: Bool = false) {
+        udpDiscovery.stop()
+        tcpServer.stop()
+
+        guard !stopOnly else { return }
+
+        tcpServer.start(preferredPort: Config.shared.tcpPort)
+        Config.shared.tcpPort = tcpServer.actualPort
+        udpDiscovery.startListening(port: Config.shared.tcpPort)
+        KLog.log("[DeviceManager] Restarted transport services on port \(Config.shared.tcpPort)")
+    }
+
     private func getCurrentLocalIPs() -> [String] {
         var ips = [String]()
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
@@ -597,8 +854,21 @@ class DeviceManager: ObservableObject {
 
     private func handleDisconnection(conn: KDEConnection) {
         let deviceId = conn.remoteDeviceId
+        let deviceName = deviceId.flatMap { devices[$0]?.name } ?? "unknown"
+        KLog.log("[Link] handleDisconnection called for \(deviceName) (deviceId=\(deviceId ?? "nil"), connRunning=\(conn.running), connFd=\(conn.fd))")
         if let id = deviceId {
             connectingDeviceIds.remove(id)
+            lastHeartbeatSent.removeValue(forKey: id)
+
+            // Track TLS failures for backoff — if this connection never completed TLS,
+            // it was a handshake failure (phone locked/Dozing, cert issue, etc.)
+            if !conn.tlsEstablished {
+                let prev = consecutiveTLSFailures[id] ?? 0
+                consecutiveTLSFailures[id] = prev + 1
+                KLog.log("[Link] TLS failure #\(prev + 1) for \(deviceName)")
+            } else {
+                consecutiveTLSFailures.removeValue(forKey: id)
+            }
 
             // Only tear down device state if THIS conn is still the active one.
             // If connections[id] already points to a different (newer) conn, a replacement
@@ -664,7 +934,47 @@ class DeviceManager: ObservableObject {
         }
 
         guard let deviceId = conn.remoteDeviceId, let device = devices[deviceId] else {
-            KLog.log("[DeviceManager] Packet dropped: no device for connection \(conn.host)")
+            KLog.log("[DeviceManager] Packet dropped: no device for connection \(conn.host) (type=\(packet.type), remoteId=\(conn.remoteDeviceId ?? "nil"))")
+            // If this is an identity packet and we don't know the device yet, process it
+            if packet.type == "kdeconnect.identity",
+               let devId = packet.body["deviceId"]?.value as? String {
+                let deviceName = packet.body["deviceName"]?.value as? String ?? "Unknown"
+                let deviceType = packet.body["deviceType"]?.value as? String ?? "phone"
+                conn.remoteDeviceId = devId
+                let device = getOrCreateDevice(id: devId, name: deviceName, type: deviceType)
+                Config.shared.saveDeviceName(deviceName, for: devId)
+                Config.shared.saveDeviceType(deviceType, for: devId)
+                KLog.log("[DeviceManager] Recovered identity for \(deviceName) (\(devId)) from dropped packet on \(conn.host)")
+                // Re-key the connection from temp key to deviceId
+                for (key, c) in connections where c === conn && key != devId {
+                    connections.removeValue(forKey: key)
+                    connections[devId] = conn
+                    break
+                }
+                return
+            }
+            // Fallback: try to identify device by saved IP (Tailscale/VPN connections
+            // where the phone doesn't send its identity back on the second connection)
+            if conn.remoteDeviceId == nil {
+                for (savedDevId, savedIP) in Config.shared.allSavedDeviceIPs() {
+                    if savedIP == conn.host, Config.shared.isPaired(deviceId: savedDevId) {
+                        KLog.log("[DeviceManager] Identified \(conn.host) as saved device \(savedDevId) from IP match")
+                        conn.remoteDeviceId = savedDevId
+                        // Re-key from temp to deviceId
+                        for (key, c) in connections where c === conn && key != savedDevId {
+                            connections.removeValue(forKey: key)
+                            connections[savedDevId] = conn
+                            break
+                        }
+                        // Re-process this packet with the correct device
+                        if let device = devices[savedDevId] {
+                            finalizeConnection(deviceId: savedDevId, conn: conn)
+                            device.handlePacket(packet)
+                            return
+                        }
+                    }
+                }
+            }
             return
         }
         device.handlePacket(packet)
@@ -898,6 +1208,7 @@ class DeviceManager: ObservableObject {
         }
         if enabled.contains("findmyphone") { device.plugins["findmyphone"] = FindMyPhonePlugin(device: device) }
         if enabled.contains("share") { device.plugins["share"] = SharePlugin(device: device) }
+        if enabled.contains("sms") { device.plugins["sms"] = SMSPlugin(device: device) }
 
         // Request all notifications
         let notifRequest = NetworkPacket(type: "kdeconnect.notification.request", body: ["request": AnyCodable(true)])
@@ -912,6 +1223,21 @@ class DeviceManager: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    /// Check if a socket fd is actually alive using a zero-byte write.
+    /// After sleep/wake, the OS may keep the fd open but the TCP connection is dead —
+    /// this detects it without blocking. Returns false if the fd is -1 or write fails.
+    private func isSocketAlive(_ fd: Int32) -> Bool {
+        guard fd >= 0 else { return false }
+        var err: Int32 = 0
+        var errLen = socklen_t(MemoryLayout<Int32>.size)
+        let result = getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errLen)
+        if result != 0 || err != 0 {
+            KLog.log("[TCP] Socket fd=\(fd) dead: getsockopt result=\(result), error=\(err)")
+            return false
+        }
+        return true
+    }
 
     func getOrCreateDevice(id: String, name: String, type: String = "phone") -> Device {
         if let existing = devices[id] {
@@ -942,9 +1268,10 @@ class DeviceManager: ObservableObject {
         for file in files where file.hasSuffix(".der") {
             let deviceId = String(file.dropLast(4))
             let name = Config.shared.savedDeviceName(for: deviceId) ?? deviceId
-            let device = getOrCreateDevice(id: deviceId, name: name)
+            let type = Config.shared.savedDeviceType(for: deviceId) ?? "phone"
+            let device = getOrCreateDevice(id: deviceId, name: name, type: type)
             self.updateDeviceState(device, to: .disconnected)
-            KLog.log("[DeviceManager] Loaded paired device: \(name)")
+            KLog.log("[DeviceManager] Loaded paired device: \(name) (\(type))")
         }
     }
 
@@ -955,8 +1282,14 @@ class DeviceManager: ObservableObject {
         // Invalidate broadcast timer
         broadcastTimer?.invalidate()
         broadcastTimer = nil
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
 
-        // Remove sleep/wake observer
+        // Remove sleep/wake observers
+        if let observer = willSleepObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            willSleepObserver = nil
+        }
         if let observer = sleepWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             sleepWakeObserver = nil
