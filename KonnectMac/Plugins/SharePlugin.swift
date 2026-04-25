@@ -6,6 +6,23 @@ import AppKit
 class SharePlugin: PluginProtocol {
     let device: Device
 
+    /// Tail of the per-device receive chain. Every new incoming-file packet awaits the
+    /// previous receive's completion before connecting to the phone.
+    ///
+    /// This matches KDE Connect Android's `CompositeUploadFileJob` protocol: when the
+    /// phone shares multiple files (Share Sheet always uses this path, even for one
+    /// file, via SEND_MULTIPLE), it binds ONE listener on a single port and sends every
+    /// share packet up front, then loops calling `accept()` to serve the files one at
+    /// a time. If we connected in parallel, we'd race on that single port — only one
+    /// connection would be accepted, the others would sit in the kernel backlog and
+    /// fail their TLS handshakes with errSSLInternal (-9810). Worse, the phone's job
+    /// state ends up wedged, breaking subsequent in-app shares too until the job
+    /// times out on the phone side.
+    ///
+    /// The chain self-trims: each task only retains the immediately-previous task
+    /// until its own `await` returns, so the in-memory chain never grows beyond two.
+    private var receiveChain: Task<Void, Never>?
+
     init(device: Device) {
         self.device = device
         // Clean up stale .partial files older than 1 day
@@ -117,10 +134,23 @@ class SharePlugin: PluginProtocol {
                 return
             }
 
-            KLog.log("[Share] Receiving \(sanitized) (\(payloadSize) bytes) from \(host):\(port)")
-
-            Task {
-                await receiveFile(host: host, port: port, filename: sanitized, expectedSize: payloadSize)
+            // Chain after any in-flight receive so we connect to the phone's listener
+            // sequentially. Phone's CompositeUploadFileJob expects exactly one TCP
+            // connection at a time on the shared port — see `receiveChain` doc above.
+            let previousTail = self.receiveChain
+            let waitingForPrevious = previousTail != nil
+            if waitingForPrevious {
+                KLog.log("[Share] Queued \(sanitized) (\(payloadSize) bytes) from \(host):\(port) — waiting for previous receive")
+            } else {
+                KLog.log("[Share] Receiving \(sanitized) (\(payloadSize) bytes) from \(host):\(port)")
+            }
+            self.receiveChain = Task { [weak self] in
+                _ = await previousTail?.value
+                guard let self = self else { return }
+                if waitingForPrevious {
+                    KLog.log("[Share] Starting queued receive: \(sanitized)")
+                }
+                await self.receiveFile(host: host, port: port, filename: sanitized, expectedSize: payloadSize)
             }
         }
     }
