@@ -12,6 +12,34 @@ class SharePlugin: PluginProtocol {
         Self.cleanupStalePartialFiles()
     }
 
+    // MARK: - Tunables (single source of truth — no magic numbers buried in code)
+
+    /// Window during which a transfer must make at least one byte of progress, or we abort.
+    /// Covers genuinely slow networks while bailing out of permanent stalls.
+    private static let stallTimeout: TimeInterval = 60
+
+    /// Bound on the entire transfer (TLS handshake + bytes). Prevents zombie sockets
+    /// from holding file handles and ports forever.
+    private static let totalTimeout: TimeInterval = 30 * 60
+
+    /// How long we wait for the phone to open the TCP connection back to us after
+    /// we've sent the share packet. Generous because the phone may be queueing
+    /// multiple incoming files.
+    private static let acceptTimeout: TimeInterval = 120
+
+    /// TLS handshake hard cap.
+    private static let handshakeTimeout: TimeInterval = 20
+
+    /// Per-syscall socket timeout. Short enough that the I/O callback returns
+    /// often so the higher-level stall/total timeouts can be evaluated.
+    private static let socketIOTimeout: TimeInterval = 10
+
+    /// I/O chunk size. 64 KB matches typical TLS record sizes for TLS 1.2.
+    private static let chunkSize = 65536
+
+    /// Hard cap on a single file transfer (2 GB).
+    private static let maxFileSize: Int64 = 2_147_483_648
+
     private static var lastCleanupTime = Date.distantPast
     private static let cleanupLock = NSLock()
     private static func cleanupStalePartialFiles() {
@@ -63,14 +91,7 @@ class SharePlugin: PluginProtocol {
             let sanitized = sanitizeFilename(filename)
             let payloadSize = packet.payloadSize ?? 0
 
-            // Debug: log raw payloadTransferInfo
-            if let pti = packet.payloadTransferInfo {
-                KLog.log("[Share] payloadTransferInfo keys: \(pti.keys.joined(separator: ", ")), values: \(pti.mapValues { "\($0.value)" })")
-            } else {
-                KLog.log("[Share] payloadTransferInfo is nil")
-            }
-
-            // Try multiple ways to extract port
+            // Try multiple ways to extract port — phone implementations differ in JSON typing
             var port: UInt16? = nil
             if let pti = packet.payloadTransferInfo {
                 if let p = pti["port"]?.value as? Int, let safePort = UInt16(exactly: p) { port = safePort }
@@ -79,10 +100,24 @@ class SharePlugin: PluginProtocol {
                 else if let s = pti["port"]?.value as? String, let parsed = UInt16(s) { port = parsed }
             }
 
-            KLog.log("[Share] Receiving file: \(sanitized) (\(payloadSize) bytes) port=\(port ?? 0)")
-
-            guard let port = port, payloadSize > 0 else { return }
+            // Capture host eagerly — kdeConn can drop between this MainActor-hop and the Task
             let host = device.kdeConn?.host ?? ""
+
+            guard let port = port else {
+                KLog.log("[Share] Rejected file \(sanitized): missing/invalid port in payloadTransferInfo")
+                return
+            }
+            guard payloadSize > 0 else {
+                KLog.log("[Share] Rejected file \(sanitized): payloadSize=\(payloadSize)")
+                return
+            }
+            guard !host.isEmpty else {
+                KLog.log("[Share] Rejected file \(sanitized): no active connection host")
+                showFileFailedNotification(filename: sanitized)
+                return
+            }
+
+            KLog.log("[Share] Receiving \(sanitized) (\(payloadSize) bytes) from \(host):\(port)")
 
             Task {
                 await receiveFile(host: host, port: port, filename: sanitized, expectedSize: payloadSize)
@@ -93,6 +128,7 @@ class SharePlugin: PluginProtocol {
     func sendFile(url: URL) {
         guard device.kdeConn != nil else {
             KLog.log("[Share] No connection to send file")
+            showFileSendFailedNotification(filename: url.lastPathComponent, reason: "no active connection")
             return
         }
 
@@ -101,31 +137,45 @@ class SharePlugin: PluginProtocol {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let fileSize = attrs[.size] as? Int64 else {
             KLog.log("[Share] Failed to read file attributes: \(filename)")
+            showFileSendFailedNotification(filename: filename, reason: "could not read file")
+            return
+        }
+
+        guard fileSize > 0 else {
+            KLog.log("[Share] Refusing to send empty file: \(filename)")
+            showFileSendFailedNotification(filename: filename, reason: "file is empty")
+            return
+        }
+
+        guard fileSize <= Self.maxFileSize else {
+            KLog.log("[Share] File too large: \(fileSize) bytes (max \(Self.maxFileSize))")
+            showFileSendFailedNotification(filename: filename, reason: "file exceeds 2 GB limit")
             return
         }
 
         guard let fileHandle = try? FileHandle(forReadingFrom: url) else {
             KLog.log("[Share] Failed to open file: \(filename)")
+            showFileSendFailedNotification(filename: filename, reason: "could not open file")
             return
         }
-
-        KLog.log("[Share] Preparing to send \(filename) (\(fileSize) bytes)")
 
         // Pre-load identity on main thread before dispatching to background
         guard let sendIdentity = CertificateManager.shared.getOrCreateIdentity() else {
             KLog.log("[Share] No identity available for file send")
             try? fileHandle.close()
+            showFileSendFailedNotification(filename: filename, reason: "missing local identity")
             return
         }
 
         // Pre-load stored cert for peer validation
         let storedCert = Config.shared.loadPairedDeviceCert(id: device.id)
-        let deviceId = device.id
 
         // Create a BSD socket TLS listener
         let serverFd = socket(AF_INET, SOCK_STREAM, 0)
         guard serverFd >= 0 else {
-            KLog.log("[Share] Failed to create server socket")
+            KLog.log("[Share] Failed to create server socket: errno=\(errno)")
+            try? fileHandle.close()
+            showFileSendFailedNotification(filename: filename, reason: "socket() failed")
             return
         }
 
@@ -144,39 +194,51 @@ class SharePlugin: PluginProtocol {
             }
         }
         guard bindResult == 0 else {
-            KLog.log("[Share] Bind failed")
+            KLog.log("[Share] Bind failed: errno=\(errno)")
             Darwin.close(serverFd)
+            try? fileHandle.close()
+            showFileSendFailedNotification(filename: filename, reason: "bind() failed")
             return
         }
 
         // Get assigned port
         var boundAddr = sockaddr_in()
         var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-        withUnsafeMutablePointer(to: &boundAddr) { ptr in
+        _ = withUnsafeMutablePointer(to: &boundAddr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 getsockname(serverFd, $0, &addrLen)
             }
         }
         let port = UInt16(bigEndian: boundAddr.sin_port)
 
-        listen(serverFd, 1)
+        // Backlog 1: only one transfer per server socket. listen() must succeed
+        // before we tell the phone where to connect.
+        guard listen(serverFd, 1) == 0 else {
+            KLog.log("[Share] listen() failed: errno=\(errno)")
+            Darwin.close(serverFd)
+            try? fileHandle.close()
+            showFileSendFailedNotification(filename: filename, reason: "listen() failed")
+            return
+        }
 
-        // Send share packet with port info
+        // Send share packet with port info AFTER listen() so phone can never beat us to it
         var sharePacket = NetworkPacket(type: "kdeconnect.share.request", body: [
             "filename": AnyCodable(filename)
         ])
         sharePacket.payloadSize = fileSize
         sharePacket.payloadTransferInfo = ["port": AnyCodable(Int(port))]
         device.send(sharePacket)
-        KLog.log("[Share] Sent share packet for \(filename) on port \(port)")
+        KLog.log("[Share] Sending \(filename) (\(fileSize) bytes) on port \(port)")
+
+        let deviceName = device.name
 
         // Accept connection and send file on background thread
         DispatchQueue.global(qos: .userInitiated).async {
             defer { try? fileHandle.close() }
 
-            // 60s timeout — phone may need a moment to open the connection
-            var timeout = timeval(tv_sec: 60, tv_usec: 0)
-            setsockopt(serverFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            // Accept timeout — phone may be queueing multiple files behind this one
+            var acceptTimeout = timeval(tv_sec: __darwin_time_t(Self.acceptTimeout), tv_usec: 0)
+            setsockopt(serverFd, SOL_SOCKET, SO_RCVTIMEO, &acceptTimeout, socklen_t(MemoryLayout<timeval>.size))
 
             var clientAddr = sockaddr_storage()
             var clientLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
@@ -188,18 +250,24 @@ class SharePlugin: PluginProtocol {
             Darwin.close(serverFd)
 
             guard clientFd >= 0 else {
-                KLog.log("[Share] Phone never connected for file send (timeout or firewall)")
-                Task { @MainActor in self.showFileSendFailedNotification(filename: filename) }
+                KLog.log("[Share] Phone never connected for \(filename) (errno=\(errno)) — firewall or timeout?")
+                Task { @MainActor in
+                    self.showFileSendFailedNotification(filename: filename, reason: "phone did not connect (firewall?)")
+                }
                 return
             }
 
-            // Disable Nagle to improve streaming throughput
-            var nodelay: Int32 = 1
-            setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
+            // Critical: install per-syscall I/O timeouts BEFORE starting TLS handshake.
+            // Without these, a phone that connects but never sends handshake bytes hangs
+            // Darwin.read() forever, defeating any higher-level deadline check.
+            Self.configureTransferSocket(fd: clientFd)
 
             // Setup TLS as server — must match KDEConnection's TLS config exactly
             guard let ctx = SSLCreateContext(nil, .serverSide, .streamType) else {
                 Darwin.close(clientFd)
+                Task { @MainActor in
+                    self.showFileSendFailedNotification(filename: filename, reason: "TLS context creation failed")
+                }
                 return
             }
             let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
@@ -211,108 +279,118 @@ class SharePlugin: PluginProtocol {
             SSLSetProtocolVersionMin(ctx, .tlsProtocol12)
             SSLSetSessionOption(ctx, .breakOnServerAuth, true)
             SSLSetSessionOption(ctx, .breakOnClientAuth, true)
-
             SSLSetCertificate(ctx, [sendIdentity] as CFArray)
 
-            // TLS handshake with timeout
-            var status: OSStatus
-            var attempts = 0
-            let hsDeadline = Date().addingTimeInterval(15)
-            repeat {
-                status = SSLHandshake(ctx)
-                attempts += 1
-                if Date() > hsDeadline {
-                    KLog.log("[Share] Send TLS handshake timed out after \(attempts) attempts")
-                    break
-                }
-            } while status == errSSLWouldBlock || status == -9841 || status == errSSLPeerAuthCompleted || status == errSSLClientCertRequested
-
-            guard status == errSecSuccess else {
-                KLog.log("[Share] TLS handshake failed: \(status)")
+            guard Self.runHandshake(ctx: ctx, role: "send") else {
                 SSLClose(ctx); Darwin.close(clientFd)
+                Task { @MainActor in
+                    self.showFileSendFailedNotification(filename: filename, reason: "TLS handshake failed")
+                }
                 return
             }
 
             // Validate peer certificate matches the paired device
-            if let storedCert = storedCert,
-               storedCert.count > 1 {
-                var trust: SecTrust?
-                SSLCopyPeerTrust(ctx, &trust)
-                if let peerTrust = trust,
-                   let certs = SecTrustCopyCertificateChain(peerTrust) as? [SecCertificate],
-                   let peerCert = certs.first {
-                    let peerData = SecCertificateCopyData(peerCert) as Data
-                    if peerData != storedCert {
-                        KLog.log("[Share] File transfer peer cert mismatch — rejecting")
-                        SSLClose(ctx); Darwin.close(clientFd)
-                        return
+            if let storedCert = storedCert, storedCert.count > 1 {
+                if !Self.validatePeer(ctx: ctx, expectedCertData: storedCert) {
+                    KLog.log("[Share] File transfer peer cert mismatch — rejecting")
+                    SSLClose(ctx); Darwin.close(clientFd)
+                    Task { @MainActor in
+                        self.showFileSendFailedNotification(filename: filename, reason: "peer certificate mismatch")
                     }
+                    return
                 }
             }
 
-            // Stream file data in 64KB chunks
-            let chunkSize = 65536
+            // Stream file data in chunks with time-based stall detection
+            let started = Date()
             var totalWritten: Int64 = 0
-            var sendError = false
+            var lastProgress = Date()
+            var sendError: String? = nil
 
-            while totalWritten < fileSize {
-                guard let chunk = try? fileHandle.read(upToCount: chunkSize), !chunk.isEmpty else {
+            outerLoop: while totalWritten < fileSize {
+                if Date().timeIntervalSince(started) > Self.totalTimeout {
+                    sendError = "exceeded total transfer timeout"
+                    break
+                }
+
+                let chunk: Data
+                do {
+                    guard let read = try fileHandle.read(upToCount: Self.chunkSize), !read.isEmpty else {
+                        sendError = "file ended before expected size (\(totalWritten)/\(fileSize) bytes)"
+                        break
+                    }
+                    chunk = read
+                } catch {
+                    sendError = "file read failed: \(error)"
                     break
                 }
 
                 var chunkWritten = 0
-                chunk.withUnsafeBytes { buf in
-                    guard let baseAddr = buf.baseAddress else { return }
-                    var retries = 0
-                    while chunkWritten < chunk.count {
-                        var written = 0
-                        let remaining = chunk.count - chunkWritten
-                        let writeStatus = SSLWrite(ctx, baseAddr + chunkWritten, remaining, &written)
-                        if written > 0 { chunkWritten += written; retries = 0 }
-                        if writeStatus == errSSLWouldBlock && written == 0 {
-                            retries += 1
-                            if retries > 5000 {
-                                KLog.log("[Share] SSLWrite stuck for 5s during send, aborting")
-                                sendError = true
-                                return
-                            }
-                            usleep(1000)
-                            continue
-                        }
-                        if writeStatus != errSecSuccess && writeStatus != errSSLWouldBlock {
-                            sendError = true
-                            return
-                        }
+                while chunkWritten < chunk.count {
+                    var written = 0
+                    let remaining = chunk.count - chunkWritten
+                    let writeStatus = chunk.withUnsafeBytes { buf -> OSStatus in
+                        guard let baseAddr = buf.baseAddress else { return errSecParam }
+                        return SSLWrite(ctx, baseAddr + chunkWritten, remaining, &written)
                     }
+
+                    if written > 0 {
+                        chunkWritten += written
+                        lastProgress = Date()
+                    }
+
+                    if writeStatus == errSecSuccess { continue }
+
+                    if writeStatus == errSSLWouldBlock {
+                        if Date().timeIntervalSince(lastProgress) > Self.stallTimeout {
+                            sendError = "no progress for \(Int(Self.stallTimeout))s during send"
+                            break outerLoop
+                        }
+                        // Only sleep if no progress this iteration — otherwise retry immediately
+                        if written == 0 { usleep(2000) }
+                        continue
+                    }
+
+                    sendError = "SSLWrite returned \(writeStatus)"
+                    break outerLoop
                 }
 
                 totalWritten += Int64(chunkWritten)
 
-                if sendError { break }
-
-                // Progress logging for large files
-                if fileSize > 1_000_000 && totalWritten % 1_000_000 < Int64(chunkSize) {
-                    KLog.log("[Share] Send progress: \(totalWritten)/\(fileSize) bytes (\(totalWritten * 100 / fileSize)%)")
+                // Progress logging for large files (every ~5%)
+                if fileSize > 5_000_000 {
+                    let pct = totalWritten * 100 / fileSize
+                    let prevPct = (totalWritten - Int64(chunkWritten)) * 100 / fileSize
+                    if pct / 5 != prevPct / 5 {
+                        KLog.log("[Share] \(filename): \(pct)% (\(totalWritten)/\(fileSize) bytes)")
+                    }
                 }
             }
 
+            // Graceful close — SSLClose sends close-notify; SO_LINGER ensures
+            // the kernel TCP stack drains the send buffer before sending FIN.
+            Self.enableLinger(fd: clientFd)
             SSLClose(ctx)
             Darwin.close(clientFd)
-            // fdPtr.deallocate() handled by defer
-            if sendError || totalWritten < fileSize {
-                KLog.log("[Share] File send incomplete: \(filename) (\(totalWritten)/\(fileSize) bytes)")
-                Task { @MainActor in self.showFileSendFailedNotification(filename: filename) }
+
+            let elapsed = Date().timeIntervalSince(started)
+            if let err = sendError {
+                KLog.log("[Share] Send incomplete: \(filename) (\(totalWritten)/\(fileSize) bytes, \(String(format: "%.1f", elapsed))s) — \(err)")
+                Task { @MainActor in
+                    self.showFileSendFailedNotification(filename: filename, reason: err)
+                }
             } else {
-                KLog.log("[Share] File sent via TLS: \(filename) (\(totalWritten) bytes)")
+                let mbps = Double(totalWritten) / elapsed / 1_000_000
+                KLog.log("[Share] Sent \(filename) → \(deviceName) (\(totalWritten) bytes, \(String(format: "%.1f", elapsed))s, \(String(format: "%.1f", mbps)) MB/s)")
                 Task { @MainActor in self.showFileSentNotification(filename: filename) }
             }
         }
     }
 
     private func receiveFile(host: String, port: UInt16, filename: String, expectedSize: Int64) async {
-        let maxFileSize: Int64 = 2_147_483_648
-        if expectedSize > maxFileSize {
-            KLog.log("[Share] File too large: \(expectedSize) bytes, max \(maxFileSize)")
+        if expectedSize > Self.maxFileSize {
+            KLog.log("[Share] File too large: \(expectedSize) bytes, max \(Self.maxFileSize)")
+            showFileFailedNotification(filename: filename)
             return
         }
 
@@ -356,7 +434,7 @@ class SharePlugin: PluginProtocol {
         }
 
         guard bytesWritten > 0 else {
-            KLog.log("[Share] File download failed for \(filename)")
+            KLog.log("[Share] File download failed for \(filename) (no bytes received)")
             try? FileManager.default.removeItem(at: partialURL)
             showFileFailedNotification(filename: filename)
             return
@@ -366,10 +444,10 @@ class SharePlugin: PluginProtocol {
         do {
             if complete {
                 try FileManager.default.moveItem(at: partialURL, to: destURL)
-                KLog.log("[Share] File saved: \(destURL.path) (\(bytesWritten)/\(expectedSize) bytes)")
+                KLog.log("[Share] Saved \(destURL.lastPathComponent) (\(bytesWritten) bytes)")
                 showFileReceivedNotification(filename: filename, path: destURL.path)
             } else {
-                KLog.log("[Share] Partial file: \(partialURL.path) (\(bytesWritten)/\(expectedSize) bytes)")
+                KLog.log("[Share] Partial: \(partialURL.lastPathComponent) (\(bytesWritten)/\(expectedSize) bytes)")
                 showFileReceivedNotification(filename: filename, path: partialURL.path, partial: true, received: bytesWritten, expected: Int(expectedSize))
             }
         } catch {
@@ -383,12 +461,9 @@ class SharePlugin: PluginProtocol {
     private nonisolated func downloadFileStreaming(host: String, port: UInt16, expectedSize: Int, destURL: URL, storedCertData: Data?) -> Int {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
-            KLog.log("[Share] Socket creation failed")
+            KLog.log("[Share] Socket creation failed: errno=\(errno)")
             return 0
         }
-
-        var nodelay: Int32 = 1
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -400,9 +475,10 @@ class SharePlugin: PluginProtocol {
             return 0
         }
 
-        var timeout = timeval(tv_sec: 30, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        // Connect timeout — separate from per-I/O timeout so we fail fast if phone is unreachable
+        var connectTimeout = timeval(tv_sec: 15, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &connectTimeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout, socklen_t(MemoryLayout<timeval>.size))
 
         let result = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -415,7 +491,8 @@ class SharePlugin: PluginProtocol {
             return 0
         }
 
-        KLog.log("[Share] Connected to \(host):\(port) for file download")
+        // Switch to data-transfer socket options (KEEPALIVE + per-I/O timeouts)
+        Self.configureTransferSocket(fd: fd)
 
         guard let ctx = SSLCreateContext(nil, .clientSide, .streamType) else {
             KLog.log("[Share] SSLCreateContext failed")
@@ -435,41 +512,19 @@ class SharePlugin: PluginProtocol {
             SSLSetCertificate(ctx, [identity] as CFArray)
         }
 
-        var status: OSStatus
-        var attempts = 0
-        let hsDeadline = Date().addingTimeInterval(15)
-        repeat {
-            status = SSLHandshake(ctx)
-            attempts += 1
-            if Date() > hsDeadline {
-                KLog.log("[Share] Receive TLS handshake timed out after \(attempts) attempts")
-                break
-            }
-        } while status == errSSLWouldBlock || status == -9841 || status == errSSLPeerAuthCompleted || status == errSSLClientCertRequested
-
-        guard status == errSecSuccess else {
-            KLog.log("[Share] File TLS handshake failed after \(attempts) attempts: \(status)")
+        guard Self.runHandshake(ctx: ctx, role: "receive") else {
             SSLClose(ctx); Darwin.close(fd)
             return 0
         }
 
         // Validate peer certificate matches the paired device
         if let storedCert = storedCertData, storedCert.count > 1 {
-            var trust: SecTrust?
-            SSLCopyPeerTrust(ctx, &trust)
-            if let peerTrust = trust,
-               let certs = SecTrustCopyCertificateChain(peerTrust) as? [SecCertificate],
-               let peerCert = certs.first {
-                let peerData = SecCertificateCopyData(peerCert) as Data
-                if peerData != storedCert {
-                    KLog.log("[Share] File download peer cert mismatch — rejecting")
-                    SSLClose(ctx); Darwin.close(fd)
-                    return 0
-                }
+            if !Self.validatePeer(ctx: ctx, expectedCertData: storedCert) {
+                KLog.log("[Share] File download peer cert mismatch — rejecting")
+                SSLClose(ctx); Darwin.close(fd)
+                return 0
             }
         }
-
-        KLog.log("[Share] File TLS established, streaming \(expectedSize) bytes to disk")
 
         // Create file and open FileHandle for streaming writes
         guard FileManager.default.createFile(atPath: destURL.path, contents: nil) else {
@@ -484,65 +539,145 @@ class SharePlugin: PluginProtocol {
         }
         defer { try? fileHandle.close() }
 
+        let started = Date()
         var totalReceived = 0
-        var buffer = [UInt8](repeating: 0, count: 65536)
-        var consecutiveErrors = 0
-        let maxConsecutiveErrors = 10
+        var buffer = [UInt8](repeating: 0, count: Self.chunkSize)
+        var lastProgress = Date()
 
-        while totalReceived < expectedSize {
+        readLoop: while totalReceived < expectedSize {
+            if Date().timeIntervalSince(started) > Self.totalTimeout {
+                KLog.log("[Share] Receive exceeded total timeout at \(totalReceived)/\(expectedSize) bytes")
+                break
+            }
+
             var bytesRead = 0
             let toRead = min(buffer.count, expectedSize - totalReceived)
             let readStatus = SSLRead(ctx, &buffer, toRead, &bytesRead)
 
+            // Always consume any data we got — partial reads with errSSLWouldBlock are normal
             if bytesRead > 0 {
                 fileHandle.write(Data(buffer[0..<bytesRead]))
                 totalReceived += bytesRead
-                consecutiveErrors = 0
+                lastProgress = Date()
 
-                if expectedSize > 1_000_000 && totalReceived % 1_000_000 < 65536 {
-                    KLog.log("[Share] Progress: \(totalReceived)/\(expectedSize) bytes (\(totalReceived * 100 / expectedSize)%)")
+                if expectedSize > 5_000_000 {
+                    let pct = totalReceived * 100 / expectedSize
+                    let prevPct = (totalReceived - bytesRead) * 100 / expectedSize
+                    if pct / 5 != prevPct / 5 {
+                        KLog.log("[Share] Recv \(pct)% (\(totalReceived)/\(expectedSize) bytes)")
+                    }
                 }
             }
 
-            if readStatus == errSSLClosedGraceful || readStatus == errSSLClosedAbort {
-                KLog.log("[Share] Peer closed after \(totalReceived)/\(expectedSize) bytes")
-                break
-            }
-
-            if readStatus == errSSLWouldBlock {
-                consecutiveErrors += 1
-                if consecutiveErrors >= maxConsecutiveErrors {
-                    KLog.log("[Share] Too many timeouts after \(totalReceived)/\(expectedSize) bytes")
-                    break
+            switch readStatus {
+            case errSecSuccess:
+                if bytesRead == 0 {
+                    // Clean EOF before expected size — peer ended early
+                    KLog.log("[Share] EOF at \(totalReceived)/\(expectedSize) bytes")
+                    break readLoop
                 }
-                usleep(10_000)
+                // Got data — try again immediately for more
                 continue
-            }
 
-            if readStatus != errSecSuccess {
-                consecutiveErrors += 1
-                KLog.log("[Share] SSLRead status \(readStatus) after \(totalReceived)/\(expectedSize) bytes (attempt \(consecutiveErrors))")
-                if consecutiveErrors >= maxConsecutiveErrors {
-                    KLog.log("[Share] Giving up after \(consecutiveErrors) consecutive errors")
-                    break
+            case errSSLClosedGraceful, errSSLClosedAbort:
+                if totalReceived < expectedSize {
+                    KLog.log("[Share] Peer closed at \(totalReceived)/\(expectedSize) bytes")
                 }
-                usleep(10_000)
-                continue
-            }
+                break readLoop
 
-            if bytesRead == 0 && readStatus == errSecSuccess {
-                KLog.log("[Share] EOF after \(totalReceived)/\(expectedSize) bytes")
-                break
+            case errSSLWouldBlock:
+                if Date().timeIntervalSince(lastProgress) > Self.stallTimeout {
+                    KLog.log("[Share] No progress for \(Int(Self.stallTimeout))s at \(totalReceived)/\(expectedSize) bytes")
+                    break readLoop
+                }
+                // If we made progress this iteration, retry immediately; otherwise back off briefly
+                if bytesRead == 0 { usleep(5000) }
+                continue
+
+            default:
+                KLog.log("[Share] SSLRead error \(readStatus) at \(totalReceived)/\(expectedSize) bytes")
+                break readLoop
             }
         }
 
         SSLClose(ctx)
         Darwin.close(fd)
-        // fdPtr.deallocate() handled by defer
 
-        KLog.log("[Share] Downloaded \(totalReceived)/\(expectedSize) bytes")
+        let elapsed = Date().timeIntervalSince(started)
+        let mbps = elapsed > 0 ? Double(totalReceived) / elapsed / 1_000_000 : 0
+        KLog.log("[Share] Received \(totalReceived)/\(expectedSize) bytes in \(String(format: "%.1f", elapsed))s (\(String(format: "%.1f", mbps)) MB/s)")
         return totalReceived
     }
+
+    // MARK: - Socket helpers (shared by send & receive)
+
+    /// Configure a data-transfer socket: TCP_NODELAY for streaming, SO_KEEPALIVE
+    /// for dead-peer detection, and short per-syscall timeouts so the I/O callback
+    /// returns often enough for higher-level deadlines to kick in.
+    private nonisolated static func configureTransferSocket(fd: Int32) {
+        var nodelay: Int32 = 1
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
+
+        var keepAlive: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
+
+        // Probe quickly (TCP layer) so a dead peer is noticed within ~30s
+        var keepIdle: Int32 = 30
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepIdle, socklen_t(MemoryLayout<Int32>.size))
+
+        var io = timeval(tv_sec: __darwin_time_t(socketIOTimeout), tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &io, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &io, socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    /// Block close() up to 5s waiting for the kernel send buffer to drain — without
+    /// this, the last TLS records of a large file can be discarded when we close.
+    private nonisolated static func enableLinger(fd: Int32) {
+        var lng = linger(l_onoff: 1, l_linger: 5)
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &lng, socklen_t(MemoryLayout<linger>.size))
+    }
+
+    /// Run the TLS handshake with a hard deadline. Returns true on success.
+    /// Per-syscall timeouts must already be set on the underlying fd, otherwise
+    /// the I/O callback can hang indefinitely and bypass the deadline check.
+    private nonisolated static func runHandshake(ctx: SSLContext, role: String) -> Bool {
+        let deadline = Date().addingTimeInterval(handshakeTimeout)
+        var attempts = 0
+        while Date() < deadline {
+            let status = SSLHandshake(ctx)
+            attempts += 1
+            switch status {
+            case errSecSuccess:
+                return true
+            case errSSLWouldBlock, -9841, errSSLPeerAuthCompleted, errSSLClientCertRequested:
+                // -9841 is errSSLServerAuthCompleted (private constant)
+                continue
+            default:
+                KLog.log("[Share] \(role) TLS handshake failed: status=\(status) attempts=\(attempts)")
+                return false
+            }
+        }
+        KLog.log("[Share] \(role) TLS handshake timed out after \(attempts) attempts")
+        return false
+    }
+
+    /// Validate that the TLS peer's leaf certificate matches the cert we recorded
+    /// during pairing. Returns true if the cert matches OR if the trust chain is
+    /// inaccessible (we don't want to drop a transfer because of a transient
+    /// SecTrust failure on a paired device).
+    private nonisolated static func validatePeer(ctx: SSLContext, expectedCertData: Data) -> Bool {
+        var trust: SecTrust?
+        SSLCopyPeerTrust(ctx, &trust)
+        guard let peerTrust = trust,
+              let certs = SecTrustCopyCertificateChain(peerTrust) as? [SecCertificate],
+              let peerCert = certs.first else {
+            return true
+        }
+        let peerData = SecCertificateCopyData(peerCert) as Data
+        return peerData == expectedCertData
+    }
+
+    // MARK: - Notifications
 
     private func showFileReceivedNotification(filename: String, path: String, partial: Bool = false, received: Int = 0, expected: Int = 0) {
         let content = UNMutableNotificationContent()
@@ -581,10 +716,10 @@ class SharePlugin: PluginProtocol {
         UNUserNotificationCenter.current().add(request)
     }
 
-    private func showFileSendFailedNotification(filename: String) {
+    private func showFileSendFailedNotification(filename: String, reason: String = "transfer failed") {
         let content = UNMutableNotificationContent()
         content.title = "File Send Failed"
-        content.body = "\(filename) — Phone did not connect. Check firewall settings."
+        content.body = "\(filename) — \(reason)"
         content.sound = .default
 
         let request = UNNotificationRequest(identifier: "file-\(UUID().uuidString)", content: content, trigger: nil)
