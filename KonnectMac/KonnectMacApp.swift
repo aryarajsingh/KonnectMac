@@ -26,8 +26,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var preferencesCloseObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Single instance enforcement via lock file
-        if !acquireLockFile() {
+        // Single instance enforcement via lock file (with handoff support for launchd)
+        switch acquireLockFile() {
+        case .acquired:
+            break // continue normal startup
+        case .conflictHandoffFailed:
+            // We're a launchd-spawned instance that couldn't take over — exit silently
+            // so launchd records a clean exit (KeepAlive.SuccessfulExit=false won't
+            // trigger an immediate restart loop).
+            KLog.log("[App] Lock handoff failed — exiting silently to avoid restart loop")
+            NSApp.terminate(nil)
+            return
+        case .conflictGuiInstance:
+            // User double-clicked the icon while another instance is running — alert them
             let alert = NSAlert()
             alert.messageText = "KonnectMac is already running"
             alert.informativeText = "Another instance of KonnectMac is already active. Only one instance can run at a time."
@@ -84,10 +95,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     // MARK: - Single Instance Lock
 
-    private func acquireLockFile() -> Bool {
+    /// Outcome of trying to acquire the single-instance lock.
+    private enum LockAcquisition {
+        /// Got the lock (or open() failed and we let the launch through anyway).
+        case acquired
+        /// Conflict with the user-launched (LaunchServices) instance — show the alert.
+        case conflictGuiInstance
+        /// We're launchd-spawned and the in-process handoff didn't succeed — exit silently.
+        case conflictHandoffFailed
+    }
+
+    private func acquireLockFile() -> LockAcquisition {
         guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             KLog.log("[App] Cannot find Application Support directory", level: .error)
-            return true // Allow launch anyway — don't block on lock failure
+            return .acquired // don't block launch on lock infrastructure failure
         }
         let lockDir = appSupport.appendingPathComponent("KonnectMac")
         try? FileManager.default.createDirectory(at: lockDir, withIntermediateDirectories: true)
@@ -96,23 +117,86 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o644)
         guard fd >= 0 else {
             KLog.log("[App] Cannot open lock file: errno=\(errno)", level: .error)
-            return true // Allow launch anyway
+            return .acquired
         }
 
-        // Try to acquire an exclusive non-blocking lock
-        // flock() auto-releases when process dies (even SIGKILL)
-        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            // Lock held by another LIVE process
+        // Fast path: lock is free, take it immediately.
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            writePidIntoLock(fd: fd)
+            lockFileFD = fd
+            return .acquired
+        }
+
+        // Lock is held by another live KonnectMac process. Behavior depends on whether
+        // we're a launchd-spawned instance trying to take over, or just the user
+        // double-clicking the icon while the app is already running.
+        if Config.isLaunchdManaged {
+            let outcome = attemptHandoff(fd: fd, lockPath: lockPath)
+            if outcome {
+                writePidIntoLock(fd: fd)
+                lockFileFD = fd
+                return .acquired
+            }
             Darwin.close(fd)
+            return .conflictHandoffFailed
+        }
+
+        Darwin.close(fd)
+        return .conflictGuiInstance
+    }
+
+    private func writePidIntoLock(fd: Int32) {
+        let pidStr = "\(ProcessInfo.processInfo.processIdentifier)\n"
+        // Truncate and rewind so the file holds only the current owner's PID
+        ftruncate(fd, 0)
+        lseek(fd, 0, SEEK_SET)
+        pidStr.data(using: .utf8).map { _ = Darwin.write(fd, ($0 as NSData).bytes, $0.count) }
+    }
+
+    /// SIGTERM the existing lock holder and wait for it to exit gracefully so launchd
+    /// can take over the running app slot. Used when the LaunchAgent-spawned instance
+    /// finds a GUI-spawned (LaunchServices) instance already running — we want the
+    /// launchd-managed one to win so future crashes / sleep-related deaths get
+    /// auto-restarted by KeepAlive.
+    private func attemptHandoff(fd: Int32, lockPath: String) -> Bool {
+        guard let existingPid = readLockOwnerPid(at: lockPath), existingPid > 0 else {
+            KLog.log("[App] Cannot read lock owner PID — handoff aborted")
+            return false
+        }
+        // Don't SIGTERM ourselves (paranoid sanity check).
+        if existingPid == ProcessInfo.processInfo.processIdentifier { return false }
+
+        // kill(pid, 0) probes whether the process exists without sending a signal.
+        // If it doesn't, the lock file is stale — try once more in case flock raced.
+        if kill(existingPid, 0) != 0 {
+            return flock(fd, LOCK_EX | LOCK_NB) == 0
+        }
+
+        KLog.log("[App] Handoff: SIGTERM → existing instance pid=\(existingPid)")
+        if kill(existingPid, SIGTERM) != 0 && errno != ESRCH {
+            KLog.log("[App] kill(SIGTERM) failed: errno=\(errno)")
             return false
         }
 
-        // Write our PID for debugging
-        let pidStr = "\(ProcessInfo.processInfo.processIdentifier)\n"
-        pidStr.data(using: .utf8).map { _ = Darwin.write(fd, ($0 as NSData).bytes, $0.count) }
+        // Wait up to 10s for the other instance's applicationWillTerminate to run and
+        // release the lock. flock auto-releases on process exit, even crash exits.
+        let started = Date()
+        while Date().timeIntervalSince(started) < 10 {
+            usleep(100_000) // 100ms poll
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                let ms = Int(Date().timeIntervalSince(started) * 1000)
+                KLog.log("[App] Handoff complete in \(ms)ms")
+                return true
+            }
+        }
+        KLog.log("[App] Handoff timed out — existing instance did not release lock")
+        return false
+    }
 
-        lockFileFD = fd
-        return true
+    private func readLockOwnerPid(at path: String) -> pid_t? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let str = String(data: data, encoding: .utf8) else { return nil }
+        return pid_t(str.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func releaseLockFile() {

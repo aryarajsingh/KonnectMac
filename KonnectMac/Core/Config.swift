@@ -188,81 +188,154 @@ class Config: ObservableObject {
         return pairingDirectory() + "/\(safeId).der"
     }
 
+    static let launchAgentLabel = "com.konnectmac.app"
+
     private static let launchAgentPath: String = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return home + "/Library/LaunchAgents/com.konnectmac.app.plist"
     }()
 
+    /// Canonical LaunchAgent plist content. Single source of truth — compared byte-for-byte
+    /// against on-disk content to decide whether to rewrite + reload in launchd.
+    ///
+    /// Why each key matters:
+    /// - `RunAtLoad`: start the job at user login.
+    /// - `KeepAlive.SuccessfulExit=false`: restart whenever the job exits with a non-zero
+    ///   status (crash, signal, jetsam during sleep). A clean Quit (NSApp.terminate → exit
+    ///   0) is *not* restarted, so the menu Quit still works.
+    /// - `LimitLoadToSessionType=Aqua`: only load in a logged-in GUI session. Without this,
+    ///   launchd can attempt to spawn before the user's GUI is ready, which fails for an
+    ///   `LSUIElement` app and confuses launchd's job state.
+    /// - `ProcessType=Interactive`: tells launchd this is a user-facing process so App Nap
+    ///   / jetsam treat it accordingly.
+    private static let launchAgentPlistContent: String = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>\(launchAgentLabel)</string>
+        <key>ProgramArguments</key>
+        <array>
+            <string>/Applications/KonnectMac.app/Contents/MacOS/KonnectMac</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>KeepAlive</key>
+        <dict>
+            <key>SuccessfulExit</key>
+            <false/>
+        </dict>
+        <key>LimitLoadToSessionType</key>
+        <string>Aqua</string>
+        <key>ProcessType</key>
+        <string>Interactive</string>
+    </dict>
+    </plist>
+    """
+
+    /// True when the current process was spawned by launchd via our LaunchAgent.
+    /// launchd sets `XPC_SERVICE_NAME` to the job's Label; LaunchServices sets it to
+    /// something like `application.com.konnectmac.app.NNN.NNN`.
+    static var isLaunchdManaged: Bool {
+        return ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == launchAgentLabel
+    }
+
     private func updateLoginItem() {
         if autoStart {
-            installLaunchAgent()
+            writeAndReloadLaunchAgent()
         } else {
             removeLaunchAgent()
         }
         UserDefaults.standard.set(autoStart, forKey: "autoStart")
     }
 
-    private func installLaunchAgent() {
-        let plist = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>Label</key>
-            <string>com.konnectmac.app</string>
-            <key>ProgramArguments</key>
-            <array>
-                <string>/Applications/KonnectMac.app/Contents/MacOS/KonnectMac</string>
-            </array>
-            <key>RunAtLoad</key>
-            <true/>
-            <key>KeepAlive</key>
-            <dict>
-                <key>SuccessfulExit</key>
-                <false/>
-            </dict>
-        </dict>
-        </plist>
-        """
-
+    /// Write the plist to disk if its content differs from what's there, and reload the
+    /// job in launchd so the new settings take effect immediately (no reboot required).
+    private func writeAndReloadLaunchAgent() {
         let dir = (FileManager.default.homeDirectoryForCurrentUser.path) + "/Library/LaunchAgents"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
+        let onDisk = (try? String(contentsOfFile: Config.launchAgentPath, encoding: .utf8))
+        let plistChanged = onDisk != Config.launchAgentPlistContent
+
+        if plistChanged {
+            do {
+                try Config.launchAgentPlistContent.write(toFile: Config.launchAgentPath, atomically: true, encoding: .utf8)
+                KLog.log("[Config] LaunchAgent plist written to \(Config.launchAgentPath)")
+            } catch {
+                KLog.log("[Config] Failed to write LaunchAgent: \(error)")
+                self.autoStart = false
+                return
+            }
+        }
+
+        // Reload in launchd if:
+        //  - plist content actually changed (upgrade case), OR
+        //  - we're not currently running as the launchd-managed instance (post-install
+        //    or first manual launch — we want launchd to take ownership so future
+        //    crashes / wake-from-sleep get auto-restarted by KeepAlive).
+        if plistChanged || !Config.isLaunchdManaged {
+            reloadLaunchdJob()
+        }
+    }
+
+    /// bootout + bootstrap the LaunchAgent so launchd picks up the latest plist *and*
+    /// spawns a managed instance. The managed instance will hit our single-instance
+    /// lock and trigger handoff (see `acquireLockFile` in KonnectMacApp.swift).
+    ///
+    /// Runs on a background queue so a slow /bin/launchctl invocation doesn't block
+    /// the main thread.
+    private func reloadLaunchdJob() {
+        let plistPath = Config.launchAgentPath
+        DispatchQueue.global(qos: .userInitiated).async {
+            let uid = String(getuid())
+            let target = "gui/\(uid)/\(Config.launchAgentLabel)"
+            let domain = "gui/\(uid)"
+
+            // bootout is idempotent — succeeds or fails benignly if the job isn't loaded.
+            // It also terminates the existing launchd-managed instance if one exists,
+            // which is fine: we're about to bootstrap a fresh one with the new plist.
+            Self.runLaunchctl(["bootout", target])
+            // Brief pause so launchd fully releases the old job state before bootstrap.
+            usleep(200_000)
+            Self.runLaunchctl(["bootstrap", domain, plistPath])
+        }
+    }
+
+    private static func runLaunchctl(_ args: [String]) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
         do {
-            try plist.write(toFile: Config.launchAgentPath, atomically: true, encoding: .utf8)
-            KLog.log("[Config] LaunchAgent installed at \(Config.launchAgentPath)")
-            // Do NOT call launchctl load here — RunAtLoad=true would immediately launch
-            // a second instance while the app is already running, triggering the duplicate
-            // instance guard. The plist in LaunchAgents/ is picked up automatically on
-            // next login, which is the correct behavior.
+            try p.run()
+            p.waitUntilExit()
+            KLog.log("[Config] launchctl \(args.joined(separator: " ")) exit=\(p.terminationStatus)")
         } catch {
-            KLog.log("[Config] Failed to install LaunchAgent: \(error)")
-            self.autoStart = false
+            KLog.log("[Config] launchctl invocation failed: \(error)")
         }
     }
 
     private func removeLaunchAgent() {
         let path = Config.launchAgentPath
-        // Unload from launchd so it won't run at the next login, then delete the plist.
-        // We DO need launchctl unload here to deregister it from the current session.
+        // Unload from launchd (terminates the managed instance) and delete the plist.
         DispatchQueue.global(qos: .background).async {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            process.arguments = ["unload", path]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try? process.run()
-            process.waitUntilExit()
+            let uid = String(getuid())
+            Self.runLaunchctl(["bootout", "gui/\(uid)/\(Config.launchAgentLabel)"])
             try? FileManager.default.removeItem(atPath: path)
             KLog.log("[Config] LaunchAgent unloaded and removed")
         }
     }
 
-    /// Sync login item state on launch. Always overwrites the plist when autoStart is on
-    /// so that existing users pick up KeepAlive / other plist changes on next app launch.
+    /// Sync login item state on launch. Always rewrites the plist when content has
+    /// drifted from what's on disk, and re-bootstraps in launchd when the running
+    /// process isn't the launchd-managed one — this is what enables the running app
+    /// to be auto-restarted by launchd after a crash / sleep-related death.
     func syncLoginItemStatus() {
         if autoStart {
-            installLaunchAgent()
+            writeAndReloadLaunchAgent()
         } else if FileManager.default.fileExists(atPath: Config.launchAgentPath) {
             KLog.log("[Config] LaunchAgent exists but autoStart=false. Removing.")
             removeLaunchAgent()
