@@ -467,8 +467,23 @@ class NotificationPlugin: PluginProtocol {
 
     private func downloadIcon(host: String, port: UInt16, expectedSize: Int, packageName: String, storedCertData: Data?, completion: @escaping (String?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let iconPath = self.downloadIconSync(host: host, port: port, expectedSize: expectedSize, packageName: packageName, storedCertData: storedCertData)
-            completion(iconPath)
+            // Retry on transient TLS handshake failures — phone-side upload TLS endpoint
+            // gets into bad states intermittently and a fresh socket usually clears it.
+            // Up to 3 attempts with short backoff; icons aren't critical so we don't try
+            // as hard as the file-share path.
+            let maxAttempts = 3
+            for attempt in 1...maxAttempts {
+                if attempt > 1 {
+                    let backoffMs: UInt32 = 200 * UInt32(1 << (attempt - 1)) // 400ms, 800ms
+                    KLog.log("[Notification] Icon retry \(attempt)/\(maxAttempts) for \(packageName) after \(backoffMs)ms")
+                    usleep(backoffMs * 1000)
+                }
+                if let iconPath = self.downloadIconSync(host: host, port: port, expectedSize: expectedSize, packageName: packageName, storedCertData: storedCertData) {
+                    completion(iconPath)
+                    return
+                }
+            }
+            completion(nil)
         }
     }
 
