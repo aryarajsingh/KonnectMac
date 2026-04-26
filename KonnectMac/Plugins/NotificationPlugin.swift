@@ -526,6 +526,27 @@ class NotificationPlugin: PluginProtocol {
 
         KLog.log("[Notification] Icon TLS connecting to \(host):\(port)")
 
+        // Get a fresh, single-use SecIdentity for this handshake — see TransferIdentity
+        // doc in CertificateManager. Sharing the cached identity across many short-lived
+        // TLS handshakes corrupts SecureTransport's per-identity session cache and every
+        // subsequent handshake fails with errSSLInternal (-9810) until app restart.
+        guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
+            KLog.log("[Notification] Could not create fresh TLS identity")
+            Darwin.close(fd)
+            return nil
+        }
+        return withExtendedLifetime(transferId) { () -> String? in
+            self.downloadIconTLSAndRead(
+                fd: fd,
+                identity: transferId.identity,
+                expectedSize: expectedSize,
+                packageName: packageName,
+                storedCertData: storedCertData
+            )
+        }
+    }
+
+    private func downloadIconTLSAndRead(fd: Int32, identity: SecIdentity, expectedSize: Int, packageName: String, storedCertData: Data?) -> String? {
         // Setup TLS
         guard let ctx = SSLCreateContext(nil, .clientSide, .streamType) else {
             Darwin.close(fd)
@@ -538,9 +559,14 @@ class NotificationPlugin: PluginProtocol {
         SSLSetIOFuncs(ctx, iconSSLRead, iconSSLWrite)
         SSLSetConnection(ctx, UnsafeMutableRawPointer(fdPtr))
         SSLSetSessionOption(ctx, .breakOnServerAuth, true)
+        SSLSetCertificate(ctx, [identity] as CFArray)
 
-        if let identity = CertificateManager.shared.getOrCreateIdentity() {
-            SSLSetCertificate(ctx, [identity] as CFArray)
+        // Unique session-resumption ID — disables SecureTransport's process-wide
+        // session cache reuse, which is the cache that goes stale and breaks every
+        // handshake after the first 5–7. Each TLS context now starts from a clean slate.
+        let unique = UUID().uuidString
+        unique.withCString { cStr in
+            SSLSetPeerID(ctx, cStr, strlen(cStr))
         }
 
         // Handshake with timeout
