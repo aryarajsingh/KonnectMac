@@ -206,7 +206,9 @@ class SharePlugin: PluginProtocol {
         }
         try? probeHandle.close()
 
-        guard let sendIdentity = CertificateManager.shared.getOrCreateIdentity() else {
+        // Pre-flight check that we can build a TLS identity at all (not used for the
+        // actual handshake — each retry creates its own fresh transfer identity).
+        guard CertificateManager.shared.getOrCreateIdentity() != nil else {
             KLog.log("[Share] No identity available for file send")
             showFileSendFailedNotification(filename: filename, reason: "missing local identity")
             return
@@ -231,7 +233,6 @@ class SharePlugin: PluginProtocol {
                     filename: filename,
                     fileSize: fileSize,
                     deviceName: deviceName,
-                    identity: sendIdentity,
                     storedCert: storedCert,
                     attempt: attempt,
                     sendPacket: { packet in
@@ -278,7 +279,6 @@ class SharePlugin: PluginProtocol {
         filename: String,
         fileSize: Int64,
         deviceName: String,
-        identity: SecIdentity,
         storedCert: Data?,
         attempt: Int,
         sendPacket: (NetworkPacket) -> Void
@@ -356,6 +356,39 @@ class SharePlugin: PluginProtocol {
 
         Self.configureTransferSocket(fd: clientFd)
 
+        // Get a fresh, single-use SecIdentity for THIS handshake — see TransferIdentity
+        // doc in CertificateManager. Without this, SecureTransport's per-SecIdentity
+        // session-cache state corrupts after 5–7 short-lived TLS handshakes and every
+        // subsequent handshake fails with errSSLInternal (-9810) until app restart.
+        guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
+            Darwin.close(clientFd)
+            return .retryable("could not create fresh TLS identity")
+        }
+        return withExtendedLifetime(transferId) { () -> SendAttemptResult in
+            Self.runSendTLSAndStream(
+                clientFd: clientFd,
+                identity: transferId.identity,
+                fileHandle: fileHandle,
+                fileSize: fileSize,
+                filename: filename,
+                deviceName: deviceName,
+                storedCert: storedCert
+            )
+        }
+    }
+
+    /// TLS handshake + stream-the-file portion of a send attempt. Split out so the
+    /// caller can wrap it in `withExtendedLifetime(transferId)` to keep the keychain
+    /// alive for the entire SSLContext lifetime.
+    private nonisolated static func runSendTLSAndStream(
+        clientFd: Int32,
+        identity: SecIdentity,
+        fileHandle: FileHandle,
+        fileSize: Int64,
+        filename: String,
+        deviceName: String,
+        storedCert: Data?
+    ) -> SendAttemptResult {
         // ---- TLS handshake ----
         guard let ctx = SSLCreateContext(nil, .serverSide, .streamType) else {
             Darwin.close(clientFd)
@@ -371,6 +404,7 @@ class SharePlugin: PluginProtocol {
         SSLSetSessionOption(ctx, .breakOnServerAuth, true)
         SSLSetSessionOption(ctx, .breakOnClientAuth, true)
         SSLSetCertificate(ctx, [identity] as CFArray)
+        Self.applyUniquePeerID(ctx: ctx)
 
         guard Self.runHandshake(ctx: ctx, role: "send") else {
             SSLClose(ctx); Darwin.close(clientFd)
@@ -610,6 +644,29 @@ class SharePlugin: PluginProtocol {
         // Switch to data-transfer socket options (KEEPALIVE + per-I/O timeouts)
         Self.configureTransferSocket(fd: fd)
 
+        // Get a fresh, single-use SecIdentity for this handshake — see TransferIdentity
+        // doc in CertificateManager. The cached identity is shared with KDEConnection's
+        // long-lived TLS context and accumulates state in SecureTransport that breaks
+        // every short-lived handshake after the first 5–7 attempts.
+        guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
+            KLog.log("[Share] Could not create transfer identity for receive")
+            Darwin.close(fd)
+            return 0
+        }
+        // withExtendedLifetime keeps the keychain alive until SSLClose has been called
+        // and the SSLContext has actually let go of its cert/key references.
+        return withExtendedLifetime(transferId) { () -> Int in
+            self.downloadFileStreamingTLS(
+                fd: fd,
+                identity: transferId.identity,
+                expectedSize: expectedSize,
+                destURL: destURL,
+                storedCertData: storedCertData
+            )
+        }
+    }
+
+    private nonisolated func downloadFileStreamingTLS(fd: Int32, identity: SecIdentity, expectedSize: Int, destURL: URL, storedCertData: Data?) -> Int {
         guard let ctx = SSLCreateContext(nil, .clientSide, .streamType) else {
             KLog.log("[Share] SSLCreateContext failed")
             Darwin.close(fd)
@@ -623,10 +680,8 @@ class SharePlugin: PluginProtocol {
         SSLSetProtocolVersionMin(ctx, .tlsProtocol12)
         SSLSetSessionOption(ctx, .breakOnServerAuth, true)
         SSLSetSessionOption(ctx, .breakOnClientAuth, true)
-
-        if let identity = CertificateManager.shared.getOrCreateIdentity() {
-            SSLSetCertificate(ctx, [identity] as CFArray)
-        }
+        SSLSetCertificate(ctx, [identity] as CFArray)
+        Self.applyUniquePeerID(ctx: ctx)
 
         guard Self.runHandshake(ctx: ctx, role: "receive") else {
             SSLClose(ctx); Darwin.close(fd)
@@ -751,6 +806,18 @@ class SharePlugin: PluginProtocol {
     private nonisolated static func enableLinger(fd: Int32) {
         var lng = linger(l_onoff: 1, l_linger: 5)
         setsockopt(fd, SOL_SOCKET, SO_LINGER, &lng, socklen_t(MemoryLayout<linger>.size))
+    }
+
+    /// Tag this SSLContext with a unique session-resumption ID so SecureTransport's
+    /// per-peer session cache can never reuse stale state from a previous handshake.
+    /// SecureTransport caches sessions process-wide; without a unique ID it tries to
+    /// resume against the cache, and a mismatch with the phone's state returns
+    /// errSSLInternal (-9810) on the first or second SSLHandshake call.
+    private nonisolated static func applyUniquePeerID(ctx: SSLContext) {
+        let unique = UUID().uuidString
+        unique.withCString { cStr in
+            SSLSetPeerID(ctx, cStr, strlen(cStr))
+        }
     }
 
     /// Run the TLS handshake with a hard deadline. Returns true on success.
