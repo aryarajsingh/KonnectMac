@@ -40,6 +40,12 @@ class KDEConnection {
     private let pendingWriteLock = NSLock()
     private var disconnectOnce = false
     private let queue = DispatchQueue(label: "kdeconnection", qos: .userInitiated)
+    /// Per-connection TLS identity. Held for the lifetime of this KDEConnection so the
+    /// underlying private keychain survives until SSLClose has fully released the cert/key
+    /// references. See the doc on `CertificateManager.TransferIdentity` for why we
+    /// can't share the cached SecIdentity across multiple SSLContexts (it gets into a
+    /// state SecureTransport never recovers from after sleep/wake or repeated handshakes).
+    private var transferIdentity: CertificateManager.TransferIdentity?
 
     var onIdentityReceived: ((NetworkPacket) -> Void)?
     var onTLSReady: (() -> Void)?
@@ -51,8 +57,13 @@ class KDEConnection {
         // Safety net: if connectionLoop never ran (object deallocated before queue executes),
         // clean up any remaining fd and SSL resources.
         if _fd >= 0 { Darwin.close(_fd); _fd = -1 }
+        // Order matters: SSLContext must be released BEFORE the TransferIdentity (whose
+        // deinit deletes the underlying keychain). Setting sslContext = nil drops our
+        // strong reference, which lets SecureTransport release its hold on the cert/key
+        // before the keychain disappears.
         if let ctx = sslContext { SSLClose(ctx); sslContext = nil }
         sslFdPtr?.deallocate()
+        transferIdentity = nil
     }
 
     init(host: String, port: UInt16, isIncoming: Bool) {
@@ -321,8 +332,25 @@ class KDEConnection {
         SSLSetSessionOption(ctx, .breakOnServerAuth, true)
         SSLSetSessionOption(ctx, .breakOnClientAuth, true)
 
-        guard let identity = CertificateManager.shared.getOrCreateIdentity() else { return false }
-        let certs = [identity] as CFArray
+        // Use a fresh single-use SecIdentity for THIS connection's TLS handshake.
+        //
+        // The cached identity from getOrCreateIdentity() gets into a broken state after
+        // sleep/wake (SecureTransport's per-identity internal state ends up referencing
+        // a stale snapshot of the keychain) — every subsequent handshake then fails
+        // with errSSLInternal (-9810) until the app restarts. That's the bug that
+        // blocked re-pairing after the phone unpaired and the Mac slept overnight:
+        // the control-channel TLS could never re-establish, so the pair packets to
+        // re-add the cert never got exchanged.
+        //
+        // The TransferIdentity owns its own private keychain and is held by `self` for
+        // the entire lifetime of this KDEConnection — released (and the keychain
+        // unlinked) when the connection ends.
+        guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
+            KLog.log("[KDEConn] Could not create fresh TLS identity")
+            return false
+        }
+        transferIdentity = transferId
+        let certs = [transferId.identity] as CFArray
         SSLSetCertificate(ctx, certs)
 
         return true
@@ -448,6 +476,10 @@ class KDEConnection {
         sslFdPtr = nil
         sslContext = nil
         _tlsEstablished = false
+        // Release the per-connection TLS identity AFTER the SSLContext has been dropped,
+        // so the underlying keychain isn't unlinked while SecureTransport still holds
+        // cert/key references to it.
+        transferIdentity = nil
     }
 
     func getPeerCertificate() -> SecCertificate? {
