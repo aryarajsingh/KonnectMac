@@ -49,6 +49,108 @@ class CertificateManager {
         FileManager.default.fileExists(atPath: p12Path.path)
     }
 
+    /// One-time-per-launch sweep that removes orphaned per-transfer keychains.
+    ///
+    /// Normally `TransferIdentity.deinit` calls `SecKeychainDelete` which both removes
+    /// the file from disk AND removes the keychain from the global search list. But if
+    /// the app crashed mid-transfer in a previous session, files in NSTemporaryDirectory
+    /// may persist (NSTemporaryDirectory is per-user under `/var/folders/.../T/`, NOT
+    /// the auto-cleared `/tmp`), and search list entries pointing to them may also
+    /// persist (search list is in user defaults, survives reboots).
+    ///
+    /// Why startup-only and NOT per-transfer: v1.8 ran `SecKeychainSetSearchList` on
+    /// every short-lived TLS handshake — multiple times per second when transfers were
+    /// active. That correlated with a system-level crash on one user's Mac. The search
+    /// list is process-wide / per-user state shared with securityd and the rest of
+    /// macOS; writing to it many times per second is reckless even when individual
+    /// writes are correct. A single bounded sweep at app launch is safe.
+    ///
+    /// All the safety checks here are intentional: any anomaly aborts the search-list
+    /// edit. We will never write an empty list, never remove keychains we don't own,
+    /// and never proceed if the math doesn't add up.
+    func cleanupOrphanedTransferKeychains() {
+        let tempDir = NSTemporaryDirectory()
+        let prefix = "konnectmac-xfer-"
+
+        // --- Pass 1: file cleanup (always safe — we only remove files matching our pattern). ---
+        var orphanedFiles = 0
+        if let entries = try? FileManager.default.contentsOfDirectory(atPath: tempDir) {
+            for entry in entries {
+                guard entry.hasPrefix(prefix),
+                      entry.hasSuffix(".keychain") || entry.hasSuffix(".keychain-db") else { continue }
+                if (try? FileManager.default.removeItem(atPath: tempDir + entry)) != nil {
+                    orphanedFiles += 1
+                }
+            }
+        }
+
+        // --- Pass 2: search list cleanup, with multiple guards. ---
+        var currentList: CFArray?
+        let copyStatus = SecKeychainCopySearchList(&currentList)
+        guard copyStatus == errSecSuccess,
+              let list = currentList as? [SecKeychain],
+              !list.isEmpty else {
+            // Can't read the search list, or it's empty — leave it alone.
+            if orphanedFiles > 0 {
+                KLog.log("[Cert] Cleaned \(orphanedFiles) orphaned transfer keychain files")
+            }
+            return
+        }
+
+        // Filter by absolute path. Path-based matching is the safest comparison — Swift's
+        // `==` on SecKeychain has implementation-defined semantics depending on whether
+        // CFEqual or reference equality is in play, and getting that wrong here would be
+        // catastrophic (we'd potentially remove the user's login keychain).
+        var removed = 0
+        let filtered = list.filter { kc in
+            var pathBuf = [CChar](repeating: 0, count: 4096)
+            var pathLen: UInt32 = 4096
+            guard SecKeychainGetPath(kc, &pathLen, &pathBuf) == errSecSuccess else {
+                return true // can't read path → keep it (always safer to err toward inclusion)
+            }
+            let path = String(cString: pathBuf)
+            // Triple match: must live in NSTemporaryDirectory, must contain our prefix,
+            // must end with .keychain.
+            let isOurs = path.hasPrefix(tempDir)
+                && path.contains(prefix)
+                && path.hasSuffix(".keychain")
+            if isOurs { removed += 1 }
+            return !isOurs
+        }
+
+        // Guards (any failure aborts the SetSearchList call):
+        //   1. Never empty the search list — that would lock the user out of every keychain.
+        //   2. Filter math must add up — defends against any weird Swift collection bug.
+        //   3. Refuse to remove "too many" — even if pattern matching went haywire, cap
+        //      the damage at a small fraction of the original list.
+        guard !filtered.isEmpty else {
+            KLog.log("[Cert] Search list cleanup would empty the list — aborting")
+            return
+        }
+        guard filtered.count == list.count - removed else {
+            KLog.log("[Cert] Search list filter math mismatch (list=\(list.count) filtered=\(filtered.count) removed=\(removed)) — aborting")
+            return
+        }
+        guard removed <= max(3, list.count / 2) else {
+            KLog.log("[Cert] Refusing to remove \(removed)/\(list.count) keychains from search list (sanity cap)")
+            return
+        }
+        guard removed > 0 else {
+            // Nothing matched — no need to write anything.
+            if orphanedFiles > 0 {
+                KLog.log("[Cert] Cleaned \(orphanedFiles) orphaned transfer keychain files")
+            }
+            return
+        }
+
+        let setStatus = SecKeychainSetSearchList(filtered as CFArray)
+        if setStatus == errSecSuccess {
+            KLog.log("[Cert] Startup cleanup: \(orphanedFiles) files + \(removed) search-list entries")
+        } else {
+            KLog.log("[Cert] Cleaned \(orphanedFiles) files; SecKeychainSetSearchList failed: \(setStatus)")
+        }
+    }
+
     /// A SecIdentity scoped to a single short-lived TLS handshake.
     ///
     /// Why this exists: when many SSLContexts share the long-lived `cachedIdentity`

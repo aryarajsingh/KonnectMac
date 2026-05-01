@@ -61,6 +61,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // showing "KonnectMac wants to use keychain" prompts.
         SecKeychainSetUserInteractionAllowed(false)
 
+        // One-time-per-launch cleanup of any per-transfer keychains left behind by
+        // crashes in previous sessions (orphaned files in NSTemporaryDirectory and
+        // the corresponding entries in the global keychain search list). The cleanup
+        // is heavily guarded — see the doc on cleanupOrphanedTransferKeychains().
+        // We do this AT STARTUP rather than per-transfer because writing to the
+        // global search list many times per second is what crashed v1.8.
+        CertificateManager.shared.cleanupOrphanedTransferKeychains()
+
         Config.shared.syncLoginItemStatus()
 
         // Show onboarding if: never completed, OR identity was wiped (fresh install over old prefs)
