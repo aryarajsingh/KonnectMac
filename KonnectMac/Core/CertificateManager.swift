@@ -10,6 +10,10 @@ class CertificateManager {
     private let lock = NSLock()
     private let p12Password = "KonnectMac"
     private var appKeychain: SecKeychain?
+    /// Serializes Copy→filter→Set on the global keychain search list. Without it,
+    /// two concurrent freshTransferIdentity calls could race and leave one of their
+    /// per-call keychains stuck in the global list.
+    private static let searchListLock = NSLock()
 
     private let appSupportDir: URL = {
         let dir = (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -113,6 +117,26 @@ class CertificateManager {
             KLog.log("[Cert] freshTransferIdentity: SecKeychainCreate failed: \(createStatus)", level: .error)
             return nil
         }
+
+        // CRITICAL: SecKeychainCreate adds the new keychain to the global search list.
+        // Every transfer would then add+remove a keychain from the search list, churning
+        // the global state and disturbing whatever caches SecureTransport keeps. Worse,
+        // it means our cached app-keychain SecIdentity may share the search list with
+        // multiple transient keychains all containing the SAME cert content — that's
+        // believed to be what corrupts the cached identity after sleep/wake. Pull our
+        // private keychain back out of the search list immediately. We still hold a
+        // direct SecKeychain reference, so SecPKCS12Import + SecureTransport can use it
+        // without it being in the global search list.
+        Self.searchListLock.lock()
+        var currentList: CFArray?
+        if SecKeychainCopySearchList(&currentList) == errSecSuccess,
+           let list = currentList as? [SecKeychain] {
+            let filtered = list.filter { $0 != kc }
+            if filtered.count != list.count {
+                _ = SecKeychainSetSearchList(filtered as CFArray)
+            }
+        }
+        Self.searchListLock.unlock()
 
         // Never lock — empty password means no prompts; lockOnSleep=false so wake doesn't lock.
         var settings = SecKeychainSettings(
