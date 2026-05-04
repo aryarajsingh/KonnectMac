@@ -92,73 +92,146 @@ class NotificationPlugin: PluginProtocol {
         "com.samsung.android.messaging",
     ])
 
-    // SF Symbol fallback icons for well-known apps (used when no cached icon exists)
-    // Maps package name → (SF Symbol name, background color)
-    private static let knownAppIcons: [String: (symbol: String, color: NSColor)] = [
+    /// Helper to construct an NSColor from a hex literal — keeps the brand color
+    /// table below readable.
+    private static func rgb(_ hex: UInt32) -> NSColor {
+        NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >>  8) & 0xFF) / 255,
+                blue:  CGFloat( hex        & 0xFF) / 255,
+                alpha: 1.0)
+    }
+
+    /// Real brand assets — bundled in `Assets.xcassets/BrandIcons/` as white-on-transparent
+    /// PNGs sourced from simple-icons (CC0 / public domain). Each entry is the asset
+    /// catalog name + the brand's official background color. We composite the white logo
+    /// onto a rounded brand-colored square at runtime to produce an icon that looks like
+    /// the real iOS-style app icon for that service.
+    private static let brandAssets: [String: (asset: String, color: NSColor)] = [
         // Email
-        "com.google.android.gm": ("envelope.fill", .systemRed),
-        "com.microsoft.office.outlook": ("envelope.fill", .systemBlue),
+        "com.google.android.gm":            ("gmail",          rgb(0xEA4335)),
+        "com.google.android.gm.lite":       ("gmail",          rgb(0xEA4335)),
+        // Messaging
+        "com.whatsapp":                     ("whatsapp",       rgb(0x25D366)),
+        "com.whatsapp.w4b":                 ("whatsapp",       rgb(0x25D366)),
+        "org.telegram.messenger":           ("telegram",       rgb(0x26A5E4)),
+        "org.thunderdog.challegram":        ("telegram",       rgb(0x26A5E4)),
+        "com.facebook.orca":                ("messenger",      rgb(0x006AFF)),
+        "com.discord":                      ("discord",        rgb(0x5865F2)),
+        "com.snapchat.android":             ("snapchat",       rgb(0xFFFC00)),
+        "org.thoughtcrime.securesms":       ("signal",         rgb(0x3A76F0)),
+        "com.google.android.apps.dynamite": ("googlechat",     rgb(0x00897B)),
+        "com.linecorp.LINEAPP":             ("line",           rgb(0x00B900)),
+        // Social
+        "com.instagram.android":            ("instagram",      rgb(0xE4405F)),
+        "com.facebook.katana":              ("facebook",       rgb(0x1877F2)),
+        "com.twitter.android":              ("x",              rgb(0x000000)),
+        "com.x.android":                    ("x",              rgb(0x000000)),
+        "com.reddit.frontpage":             ("reddit",         rgb(0xFF4500)),
+        // Carrier SMS
+        "com.google.android.apps.messaging":("googlemessages", rgb(0x1A73E8)),
+        // Media / shopping / productivity
+        "com.google.android.youtube":       ("youtube",        rgb(0xFF0000)),
+        "com.spotify.music":                ("spotify",        rgb(0x1DB954)),
+        "com.google.android.apps.maps":     ("googlemaps",     rgb(0x4285F4)),
+        "com.google.android.calendar":      ("googlecalendar", rgb(0x4285F4)),
+        "com.google.android.apps.docs":     ("googledrive",    rgb(0x4285F4)),
+    ]
+
+    /// SF Symbol fallbacks for apps where we don't have a real bundled brand asset.
+    /// Used only when `brandAssets` doesn't contain the package — a small set covering
+    /// dialers and a few other things.
+    private static let knownAppIcons: [String: (symbol: String, color: NSColor)] = [
+        // Email (no simple-icons asset for these — Outlook/Yahoo are rate-limited on simple-icons CDN)
+        "com.microsoft.office.outlook":      ("envelope.fill", .systemBlue),
         "com.yahoo.mobile.client.android.mail": ("envelope.fill", .systemPurple),
         "com.samsung.android.email.provider": ("envelope.fill", .systemBlue),
-        // Messaging
-        "com.whatsapp": ("message.fill", .systemGreen),
-        "com.whatsapp.w4b": ("message.fill", .systemGreen),
-        "org.telegram.messenger": ("paperplane.fill", .systemBlue),
-        "com.instagram.android": ("camera.fill", .systemPink),
-        "com.twitter.android": ("bird.fill", .systemCyan),
-        "com.snapchat.android": ("camera.viewfinder", .systemYellow),
-        "com.discord": ("bubble.left.and.bubble.right.fill", .systemIndigo),
-        "com.slack": ("number.square.fill", .systemPurple),
-        "com.linkedin.android": ("briefcase.fill", .systemBlue),
-        "com.reddit.frontpage": ("circle.fill", .systemOrange),
-        // Social / Media
-        "com.google.android.youtube": ("play.rectangle.fill", .systemRed),
-        "com.spotify.music": ("music.note", .systemGreen),
+        // Messaging (LinkedIn, Teams, Slack are also missing from CDN)
+        "com.linkedin.android":              ("briefcase.fill", .systemBlue),
+        "com.microsoft.teams":               ("person.2.fill", rgb(0x6264A7)),
+        "com.Slack":                         ("number.square.fill", rgb(0x4A154B)),
+        // Shopping
         "com.amazon.mShop.android.shopping": ("cart.fill", .systemOrange),
-        // Productivity
-        "com.google.android.apps.messaging": ("message.fill", .systemBlue),
-        "com.google.android.calendar": ("calendar", .systemBlue),
-        "com.google.android.apps.maps": ("map.fill", .systemGreen),
-        "com.google.android.apps.docs": ("doc.fill", .systemBlue),
-        "com.google.android.dialer": ("phone.fill", .systemGreen),
-        // System
-        "com.samsung.android.dialer": ("phone.fill", .systemGreen),
-        "com.samsung.android.messaging": ("message.fill", .systemBlue),
+        // Dialers
+        "com.google.android.dialer":         ("phone.fill", .systemGreen),
+        "com.samsung.android.dialer":        ("phone.fill", .systemGreen),
+        "com.samsung.android.messaging":     ("message.fill", .systemBlue),
     ]
 
     private static var fallbackIconCache: [String: String] = [:]
 
-    /// Generate an SF Symbol icon as fallback for known apps
+    /// Generate a fallback icon for a package. Prefers a real bundled brand logo
+    /// (Instagram, WhatsApp, etc.) over an SF Symbol, but falls back to SF Symbol when
+    /// no brand asset is bundled. Result is rendered to a 64×64 PNG and cached on disk.
     private static func fallbackIcon(for packageName: String) -> String? {
-        // Return cached fallback if already generated
         if let cached = fallbackIconCache[packageName] { return cached }
 
-        guard let appInfo = knownAppIcons[packageName] else { return nil }
+        // Path 1: real brand asset (preferred).
+        if let brand = brandAssets[packageName] {
+            return renderBrandIcon(packageName: packageName, assetName: brand.asset, background: brand.color)
+        }
 
-        guard let image = NSImage(systemSymbolName: appInfo.symbol, accessibilityDescription: nil) else { return nil }
+        // Path 2: SF Symbol fallback for the long tail.
+        if let info = knownAppIcons[packageName] {
+            return renderSFSymbolIcon(packageName: packageName, symbolName: info.symbol, background: info.color)
+        }
+
+        return nil
+    }
+
+    /// Composite a bundled white-on-transparent brand PNG onto a rounded brand-colored
+    /// square. The brand logo is placed at ~62% of the icon size with equal padding,
+    /// matching the visual weight of a typical iOS-style app icon.
+    private static func renderBrandIcon(packageName: String, assetName: String, background: NSColor) -> String? {
+        guard let logo = NSImage(named: assetName) else {
+            KLog.log("[Notification] Brand asset '\(assetName)' missing for \(packageName)")
+            return nil
+        }
+        let size = NSSize(width: 64, height: 64)
+        let finalImage = NSImage(size: size, flipped: false) { rect in
+            let bgRect = rect.insetBy(dx: 2, dy: 2)
+            let path = NSBezierPath(roundedRect: bgRect, xRadius: 14, yRadius: 14)
+            background.setFill()
+            path.fill()
+
+            // Inset the logo so it doesn't touch the edges. 14px on each side gives a
+            // 36×36 logo area inside a 64×64 icon — roughly Apple HIG proportions.
+            let logoRect = NSRect(x: 14, y: 14, width: 36, height: 36)
+            logo.draw(in: logoRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            return true
+        }
+
+        return writeIconPng(finalImage, packageName: packageName)
+    }
+
+    /// Render an SF Symbol on a brand-colored rounded square — used for apps where we
+    /// don't have a bundled logo asset.
+    private static func renderSFSymbolIcon(packageName: String, symbolName: String, background: NSColor) -> String? {
+        guard let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) else { return nil }
         let config = NSImage.SymbolConfiguration(pointSize: 36, weight: .medium)
         guard let configured = image.withSymbolConfiguration(config) else { return nil }
 
         let size = NSSize(width: 64, height: 64)
         let finalImage = NSImage(size: size, flipped: false) { rect in
-            // Rounded rectangle background
             let bgRect = rect.insetBy(dx: 2, dy: 2)
             let path = NSBezierPath(roundedRect: bgRect, xRadius: 14, yRadius: 14)
-            appInfo.color.setFill()
+            background.setFill()
             path.fill()
 
-            // White symbol centered
             NSColor.white.setFill()
             let symbolRect = NSRect(x: 14, y: 14, width: 36, height: 36)
             configured.draw(in: symbolRect, from: .zero, operation: .sourceAtop, fraction: 1.0)
             return true
         }
 
-        guard let tiffData = finalImage.tiffRepresentation,
+        return writeIconPng(finalImage, packageName: packageName)
+    }
+
+    /// Write a rendered icon to disk and remember the path. Shared by both renderers.
+    private static func writeIconPng(_ image: NSImage, packageName: String) -> String? {
+        guard let tiffData = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
               let pngData = bitmap.representation(using: .png, properties: [:]) else { return nil }
 
-        // Cache in the icon cache directory (persistent across launches)
         let cachePath = cacheDir + "/fallback-\(packageName.replacingOccurrences(of: ".", with: "_")).png"
         do {
             try pngData.write(to: URL(fileURLWithPath: cachePath))
@@ -814,6 +887,7 @@ class NotificationPlugin: PluginProtocol {
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         var pruned = 0
         var purgedSenderPics = 0
+        var purgedFallbacks = 0
         for file in files where file.hasSuffix(".png") {
             // Clean up hardlink temp files left by UNNotificationAttachment
             if file.hasPrefix("tmp-") {
@@ -825,13 +899,20 @@ class NotificationPlugin: PluginProtocol {
             let fileURL = cacheDirURL.appendingPathComponent(file)
             let path = fileURL.path
 
+            // Wipe any pre-rendered fallback PNGs from previous app versions. The new
+            // version may render this same package with a real bundled brand asset
+            // instead of the old SF Symbol — re-render on first use rather than serve
+            // a stale icon from disk.
+            if name.hasPrefix("fallback-") {
+                try? FileManager.default.removeItem(atPath: path)
+                purgedFallbacks += 1
+                continue
+            }
+
             // Migration: any cached icon for a package now in `senderPicturePackages` is
             // a stale sender profile pic from a previous app version that didn't know to
-            // skip caching it. Delete it so the SF Symbol fallback shows instead.
-            // Skip the `fallback-` prefix files — those ARE the SF Symbol fallbacks and
-            // should be preserved.
-            if !name.hasPrefix("fallback-"),
-               Self.senderPicturePackages.contains(name) {
+            // skip caching it. Delete it so the brand fallback shows instead.
+            if Self.senderPicturePackages.contains(name) {
                 try? FileManager.default.removeItem(atPath: path)
                 purgedSenderPics += 1
                 continue
@@ -852,7 +933,8 @@ class NotificationPlugin: PluginProtocol {
             }
         }
         if pruned > 0 { KLog.log("[Notification] Pruned \(pruned) stale icon cache files (>30 days)") }
-        if purgedSenderPics > 0 { KLog.log("[Notification] Purged \(purgedSenderPics) stale sender-pic caches (now use SF Symbol fallback)") }
+        if purgedSenderPics > 0 { KLog.log("[Notification] Purged \(purgedSenderPics) stale sender-pic caches (now use brand fallback)") }
+        if purgedFallbacks > 0 { KLog.log("[Notification] Purged \(purgedFallbacks) pre-rendered fallback icons (will re-render with current asset version)") }
         KLog.log("[Notification] Loaded \(iconCache.count) cached icons from disk")
     }
 
