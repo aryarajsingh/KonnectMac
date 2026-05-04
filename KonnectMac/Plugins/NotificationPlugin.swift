@@ -55,11 +55,41 @@ class NotificationPlugin: PluginProtocol {
         "com.linecorp.LINEAPP",
     ])
 
-    // Email apps send sender profile pics, not app icons — never cache their payloads
-    static let emailPackages = Set([
+    // Apps that ship the sender's profile picture as the notification icon payload
+    // instead of the actual app icon. We must never cache these — the payload is per-
+    // notification (a different person every time), and caching one would freeze that
+    // person's face as the "app icon" forever.
+    //
+    // Coverage rule of thumb: any app that's primarily a per-sender DM channel
+    // (email, messaging, social DMs) belongs here. Apps that send their own brand icon
+    // (news, banking, shopping) do NOT.
+    //
+    // For every package listed here, we also fall back to the SF Symbol icon defined
+    // in `knownAppIcons` below. If a package is here without a matching SF Symbol,
+    // notifications from it will be iconless.
+    static let senderPicturePackages = Set([
+        // Email
         "com.google.android.gm", "com.microsoft.office.outlook",
         "com.yahoo.mobile.client.android.mail", "com.samsung.android.email.provider",
-        "com.android.email"
+        "com.android.email", "com.google.android.gm.lite",
+        // Messaging
+        "com.whatsapp", "com.whatsapp.w4b",
+        "org.telegram.messenger", "org.thunderdog.challegram",
+        "com.facebook.orca",  // Messenger
+        "com.discord", "com.snapchat.android",
+        "org.thoughtcrime.securesms",  // Signal
+        "com.microsoft.teams", "com.Slack",
+        "com.google.android.apps.dynamite",  // Google Chat
+        "com.linecorp.LINEAPP",
+        // Social with DMs
+        "com.instagram.android",
+        "com.facebook.katana",
+        "com.twitter.android", "com.x.android",  // X (formerly Twitter)
+        "com.linkedin.android",
+        "com.reddit.frontpage",
+        // Carrier / SMS apps that send contact pics
+        "com.google.android.apps.messaging",
+        "com.samsung.android.messaging",
     ])
 
     // SF Symbol fallback icons for well-known apps (used when no cached icon exists)
@@ -358,7 +388,7 @@ class NotificationPlugin: PluginProtocol {
             postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: fallbackPath, replyId: replyId)
 
             // Still try to download the real icon if available (will replace fallback on next notification)
-            if hasPayload, let port = payloadPort, Self.pendingIconDownloads[packageName] == nil, !Self.emailPackages.contains(packageName) {
+            if hasPayload, let port = payloadPort, Self.pendingIconDownloads[packageName] == nil, !Self.senderPicturePackages.contains(packageName) {
                 Self.pendingIconDownloads[packageName] = []
                 let storedCert = Config.shared.loadPairedDeviceCert(id: device.id)
                 downloadIcon(host: (device.kdeConn?.host ?? ""), port: port, expectedSize: Int(packet.payloadSize ?? 0), packageName: packageName, storedCertData: storedCert) { iconPath in
@@ -656,10 +686,11 @@ class NotificationPlugin: PluginProtocol {
         // Content images: larger, often rectangular (profile pics, thumbnails, post images)
         // If it looks like a content image, use it for THIS notification only (don't cache)
         //
-        // Email apps (Gmail, Outlook, etc.) send the SENDER'S profile pic as the icon payload,
-        // not the app icon. These change per email — never cache them.
-        let isEmailApp = Self.emailPackages.contains(packageName)
-        let looksLikeAppIcon = !isEmailApp && max(w, h) <= 256 && aspectRatio <= 1.3
+        // DM-capable apps (email, messaging, social DMs) send the SENDER'S profile pic
+        // as the icon payload, not the app icon. These change per notification — never
+        // cache them. See `senderPicturePackages` above for the full list.
+        let isSenderPicApp = Self.senderPicturePackages.contains(packageName)
+        let looksLikeAppIcon = !isSenderPicApp && max(w, h) <= 256 && aspectRatio <= 1.3
         if !looksLikeAppIcon {
             KLog.log("[Notification] Content image detected (\(Int(w))x\(Int(h)) ratio=\(String(format: "%.2f", aspectRatio))) for \(packageName) — using but not caching")
             // Write to a temp file for this notification, don't cache as the app icon
@@ -782,6 +813,7 @@ class NotificationPlugin: PluginProtocol {
         }
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         var pruned = 0
+        var purgedSenderPics = 0
         for file in files where file.hasSuffix(".png") {
             // Clean up hardlink temp files left by UNNotificationAttachment
             if file.hasPrefix("tmp-") {
@@ -792,6 +824,19 @@ class NotificationPlugin: PluginProtocol {
             let name = String(file.dropLast(4))
             let fileURL = cacheDirURL.appendingPathComponent(file)
             let path = fileURL.path
+
+            // Migration: any cached icon for a package now in `senderPicturePackages` is
+            // a stale sender profile pic from a previous app version that didn't know to
+            // skip caching it. Delete it so the SF Symbol fallback shows instead.
+            // Skip the `fallback-` prefix files — those ARE the SF Symbol fallbacks and
+            // should be preserved.
+            if !name.hasPrefix("fallback-"),
+               Self.senderPicturePackages.contains(name) {
+                try? FileManager.default.removeItem(atPath: path)
+                purgedSenderPics += 1
+                continue
+            }
+
             if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
                let fileSize = attrs[.size] as? Int, fileSize > 0 {
                 // Prune icons older than 30 days
@@ -807,6 +852,7 @@ class NotificationPlugin: PluginProtocol {
             }
         }
         if pruned > 0 { KLog.log("[Notification] Pruned \(pruned) stale icon cache files (>30 days)") }
+        if purgedSenderPics > 0 { KLog.log("[Notification] Purged \(purgedSenderPics) stale sender-pic caches (now use SF Symbol fallback)") }
         KLog.log("[Notification] Loaded \(iconCache.count) cached icons from disk")
     }
 
