@@ -32,6 +32,7 @@
 		A10000000000000000000045 /* ClipboardPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000045 /* ClipboardPlugin.swift */; };
 		A10000000000000000000046 /* FindMyPhonePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000046 /* FindMyPhonePlugin.swift */; };
 		A10000000000000000000047 /* SharePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000047 /* SharePlugin.swift */; };
+		A10000000000000000000048 /* IconRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000048 /* IconRenderer.swift */; };
 		A10000000000000000000050 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000050 /* Assets.xcassets */; };
 		A10000000000000000000051 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000053 /* AppIcon.icns */; };
 /* End PBXBuildFile section */
@@ -63,6 +64,7 @@
 		B10000000000000000000045 /* ClipboardPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardPlugin.swift; sourceTree = "<group>"; };
 		B10000000000000000000046 /* FindMyPhonePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindMyPhonePlugin.swift; sourceTree = "<group>"; };
 		B10000000000000000000047 /* SharePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharePlugin.swift; sourceTree = "<group>"; };
+		B10000000000000000000048 /* IconRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconRenderer.swift; sourceTree = "<group>"; };
 		B10000000000000000000050 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Resources/Assets.xcassets; sourceTree = "<group>"; };
 		B10000000000000000000053 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/AppIcon.icns; sourceTree = "<group>"; };
 		B10000000000000000000051 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -160,6 +162,7 @@
 				B10000000000000000000045 /* ClipboardPlugin.swift */,
 				B10000000000000000000046 /* FindMyPhonePlugin.swift */,
 				B10000000000000000000047 /* SharePlugin.swift */,
+				B10000000000000000000048 /* IconRenderer.swift */,
 			);
 			path = Plugins;
 			sourceTree = "<group>";
@@ -259,6 +262,7 @@
 				A10000000000000000000045 /* ClipboardPlugin.swift in Sources */,
 				A10000000000000000000046 /* FindMyPhonePlugin.swift in Sources */,
 				A10000000000000000000047 /* SharePlugin.swift in Sources */,
+				A10000000000000000000048 /* IconRenderer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
