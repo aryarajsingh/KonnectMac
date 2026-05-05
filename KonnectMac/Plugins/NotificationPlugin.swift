@@ -72,6 +72,7 @@ class NotificationPlugin: PluginProtocol {
         "com.google.android.gm", "com.microsoft.office.outlook",
         "com.yahoo.mobile.client.android.mail", "com.samsung.android.email.provider",
         "com.android.email", "com.google.android.gm.lite",
+        "email.titan.app",  // Titan — sends sender's profile pic as the icon payload
         // Messaging
         "com.whatsapp", "com.whatsapp.w4b",
         "org.telegram.messenger", "org.thunderdog.challegram",
@@ -141,10 +142,11 @@ class NotificationPlugin: PluginProtocol {
     /// Used only when `brandAssets` doesn't contain the package — a small set covering
     /// dialers and a few other things.
     private static let knownAppIcons: [String: (symbol: String, color: NSColor)] = [
-        // Email (no simple-icons asset for these — Outlook/Yahoo are rate-limited on simple-icons CDN)
+        // Email (no simple-icons asset for these — Outlook/Yahoo/Titan are not on simple-icons CDN)
         "com.microsoft.office.outlook":      ("envelope.fill", .systemBlue),
         "com.yahoo.mobile.client.android.mail": ("envelope.fill", .systemPurple),
         "com.samsung.android.email.provider": ("envelope.fill", .systemBlue),
+        "email.titan.app":                   ("envelope.fill", rgb(0x1E1E2E)),  // Titan — dark indigo
         // Messaging (LinkedIn, Teams, Slack are also missing from CDN)
         "com.linkedin.android":              ("briefcase.fill", .systemBlue),
         "com.microsoft.teams":               ("person.2.fill", rgb(0x6264A7)),
