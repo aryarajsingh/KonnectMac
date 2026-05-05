@@ -5,6 +5,8 @@ BUNDLE_ID="com.konnectmac.app"
 # Resolve the REAL logged-in user (not root, which runs postinstall)
 REAL_USER=$(stat -f "%Su" /dev/console)
 REAL_HOME=$(dscl . -read /Users/"$REAL_USER" NFSHomeDirectory | awk '{print $2}')
+REAL_UID=$(id -u "$REAL_USER")
+LAUNCH_AGENT_PLIST="$REAL_HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
 
 # Register with LaunchServices
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" 2>/dev/null
@@ -29,5 +31,78 @@ fi
 
 # Refresh Services menu so "Send to Phone via KonnectMac" appears immediately
 /System/Library/CoreServices/pbs -update 2>/dev/null
+
+# ──────────────────────────────────────────────────────────────────────────
+# Clean update handoff: replace any running old version with the new binary
+# without forcing the user to quit + relaunch manually.
+#
+# Why this matters: when the user updates via .pkg and the running old
+# instance keeps going, the user has to Quit and reopen. On reopen, the
+# GUI-spawned instance hits the launchd handoff path in syncLoginItemStatus
+# (because !isLaunchdManaged), which bootouts the launchd job and bootstraps
+# a fresh one. That spawns a *second* instance whose single-instance lock
+# triggers a SIGTERM-based handoff against the GUI one. The two instances
+# do back-to-back TLS handshakes within ~3 seconds; the paired phone reads
+# that as connection flapping and replies with pair=false (unpair-by-remote).
+# The Mac then has to re-pair, which the user perceives as "pairing breaks
+# after every update."
+#
+# Fix: do the kill + relaunch ourselves. Old instance gets SIGTERM (so its
+# applicationWillTerminate runs, TLS connections close cleanly, lock is
+# released). If the user had autoStart enabled, kickstart the LaunchAgent
+# job so the new binary comes back as a launchd-managed instance from the
+# very first PID — no later handoff needed.
+# ──────────────────────────────────────────────────────────────────────────
+
+# 1) Find the running KonnectMac PID(s) for this user and SIGTERM them.
+#    pgrep -U scopes the search to the logged-in user (not other users on
+#    multi-user Macs), and -f matches the full app path.
+OLD_PIDS=$(pgrep -U "$REAL_UID" -f "/Applications/KonnectMac.app/Contents/MacOS/KonnectMac" 2>/dev/null)
+
+if [ -n "$OLD_PIDS" ]; then
+    for pid in $OLD_PIDS; do
+        kill -TERM "$pid" 2>/dev/null
+    done
+
+    # Give the old instance up to 5s to flush TLS close-notify, release the
+    # single-instance lock, and exit gracefully. applicationWillTerminate
+    # has its own ~5s budget so we mirror that.
+    waited=0
+    while [ "$waited" -lt 50 ]; do
+        still_alive=""
+        for pid in $OLD_PIDS; do
+            if kill -0 "$pid" 2>/dev/null; then
+                still_alive="1"
+                break
+            fi
+        done
+        [ -z "$still_alive" ] && break
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
+    # Anything still alive after 5s gets SIGKILL — better than leaving a
+    # zombie that fights the new instance for the lock.
+    for pid in $OLD_PIDS; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -KILL "$pid" 2>/dev/null
+        fi
+    done
+fi
+
+# 2) If the user had autoStart enabled (LaunchAgent plist exists),
+#    kickstart the launchd job so the new binary comes up as a
+#    launchd-managed instance directly. -k = kill any existing instance
+#    first (no-op if we already SIGTERM'd above; idempotent safety).
+#
+#    If autoStart is disabled there's no plist and we deliberately do NOT
+#    auto-relaunch — the user chose manual launch and we respect that.
+if [ -f "$LAUNCH_AGENT_PLIST" ]; then
+    # bootstrap is a no-op (and prints a warning) if the job is already
+    # loaded, but we run it anyway to handle the fresh-install case where
+    # the plist exists but launchd hasn't loaded it yet.
+    launchctl bootstrap "gui/$REAL_UID" "$LAUNCH_AGENT_PLIST" 2>/dev/null
+    launchctl kickstart -k "gui/$REAL_UID/$BUNDLE_ID" 2>/dev/null
+fi
 
 exit 0
