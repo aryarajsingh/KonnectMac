@@ -20,7 +20,9 @@
 		A10000000000000000000020 /* UDPDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* UDPDiscovery.swift */; };
 		A10000000000000000000021 /* LanServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* LanServer.swift */; };
 		A10000000000000000000022 /* KDEConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* KDEConnection.swift */; };
+		A10000000000000000000023 /* TLSHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000023 /* TLSHelpers.swift */; };
 		A10000000000000000000024 /* VerificationKeyHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000024 /* VerificationKeyHelper.swift */; };
+		A10000000000000000000025 /* SocketHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000025 /* SocketHelpers.swift */; };
 		A10000000000000000000030 /* PairingHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000030 /* PairingHandler.swift */; };
 		A10000000000000000000040 /* PluginProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000040 /* PluginProtocol.swift */; };
 		A10000000000000000000041 /* PingPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000041 /* PingPlugin.swift */; };
@@ -30,6 +32,7 @@
 		A10000000000000000000045 /* ClipboardPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000045 /* ClipboardPlugin.swift */; };
 		A10000000000000000000046 /* FindMyPhonePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000046 /* FindMyPhonePlugin.swift */; };
 		A10000000000000000000047 /* SharePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000047 /* SharePlugin.swift */; };
+		A10000000000000000000048 /* IconRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000048 /* IconRenderer.swift */; };
 		A10000000000000000000050 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000050 /* Assets.xcassets */; };
 		A10000000000000000000051 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000053 /* AppIcon.icns */; };
 /* End PBXBuildFile section */
@@ -49,7 +52,9 @@
 		B10000000000000000000020 /* UDPDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UDPDiscovery.swift; sourceTree = "<group>"; };
 		B10000000000000000000021 /* LanServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanServer.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* KDEConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KDEConnection.swift; sourceTree = "<group>"; };
+		B10000000000000000000023 /* TLSHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TLSHelpers.swift; sourceTree = "<group>"; };
 		B10000000000000000000024 /* VerificationKeyHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerificationKeyHelper.swift; sourceTree = "<group>"; };
+		B10000000000000000000025 /* SocketHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketHelpers.swift; sourceTree = "<group>"; };
 		B10000000000000000000030 /* PairingHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingHandler.swift; sourceTree = "<group>"; };
 		B10000000000000000000040 /* PluginProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginProtocol.swift; sourceTree = "<group>"; };
 		B10000000000000000000041 /* PingPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PingPlugin.swift; sourceTree = "<group>"; };
@@ -59,6 +64,7 @@
 		B10000000000000000000045 /* ClipboardPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardPlugin.swift; sourceTree = "<group>"; };
 		B10000000000000000000046 /* FindMyPhonePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindMyPhonePlugin.swift; sourceTree = "<group>"; };
 		B10000000000000000000047 /* SharePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharePlugin.swift; sourceTree = "<group>"; };
+		B10000000000000000000048 /* IconRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconRenderer.swift; sourceTree = "<group>"; };
 		B10000000000000000000050 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Resources/Assets.xcassets; sourceTree = "<group>"; };
 		B10000000000000000000053 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/AppIcon.icns; sourceTree = "<group>"; };
 		B10000000000000000000051 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -101,7 +107,6 @@
 				B10000000000000000000004 /* PreferencesView.swift */,
 				E10000000000000000000003 /* Core */,
 				E10000000000000000000004 /* Network */,
-				E10000000000000000000005 /* Pairing */,
 				E10000000000000000000006 /* Plugins */,
 				B10000000000000000000050 /* Assets.xcassets */,
 				B10000000000000000000053 /* AppIcon.icns */,
@@ -120,6 +125,7 @@
 				B10000000000000000000014 /* DeviceManager.swift */,
 				B10000000000000000000015 /* CertificateManager.swift */,
 				B10000000000000000000016 /* Logger.swift */,
+				B10000000000000000000030 /* PairingHandler.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -130,17 +136,11 @@
 				B10000000000000000000020 /* UDPDiscovery.swift */,
 				B10000000000000000000021 /* LanServer.swift */,
 				B10000000000000000000022 /* KDEConnection.swift */,
+				B10000000000000000000023 /* TLSHelpers.swift */,
 				B10000000000000000000024 /* VerificationKeyHelper.swift */,
+				B10000000000000000000025 /* SocketHelpers.swift */,
 			);
 			path = Network;
-			sourceTree = "<group>";
-		};
-		E10000000000000000000005 /* Pairing */ = {
-			isa = PBXGroup;
-			children = (
-				B10000000000000000000030 /* PairingHandler.swift */,
-			);
-			path = Pairing;
 			sourceTree = "<group>";
 		};
 		E10000000000000000000006 /* Plugins */ = {
@@ -154,6 +154,7 @@
 				B10000000000000000000045 /* ClipboardPlugin.swift */,
 				B10000000000000000000046 /* FindMyPhonePlugin.swift */,
 				B10000000000000000000047 /* SharePlugin.swift */,
+				B10000000000000000000048 /* IconRenderer.swift */,
 			);
 			path = Plugins;
 			sourceTree = "<group>";
@@ -241,7 +242,9 @@
 				A10000000000000000000020 /* UDPDiscovery.swift in Sources */,
 				A10000000000000000000021 /* LanServer.swift in Sources */,
 				A10000000000000000000022 /* KDEConnection.swift in Sources */,
+				A10000000000000000000023 /* TLSHelpers.swift in Sources */,
 				A10000000000000000000024 /* VerificationKeyHelper.swift in Sources */,
+				A10000000000000000000025 /* SocketHelpers.swift in Sources */,
 				A10000000000000000000030 /* PairingHandler.swift in Sources */,
 				A10000000000000000000040 /* PluginProtocol.swift in Sources */,
 				A10000000000000000000041 /* PingPlugin.swift in Sources */,
@@ -251,6 +254,7 @@
 				A10000000000000000000045 /* ClipboardPlugin.swift in Sources */,
 				A10000000000000000000046 /* FindMyPhonePlugin.swift in Sources */,
 				A10000000000000000000047 /* SharePlugin.swift in Sources */,
+				A10000000000000000000048 /* IconRenderer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
