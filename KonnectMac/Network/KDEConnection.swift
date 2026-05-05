@@ -431,14 +431,20 @@ class KDEConnection {
         disconnectOnce = true
         pendingWriteLock.unlock()
 
-        // Only signal the connection loop to stop — do NOT close the fd here.
-        // The connectionLoop owns the fd lifecycle: it calls cleanupSSL() then closes fd.
-        // Closing fd here would race with SSL callbacks that may be mid-read/write,
-        // and the OS could reassign the fd number to a new socket before SSLClose runs.
-        // Setting sslFdPtr to -1 makes SSL callbacks fail immediately with EBADF,
-        // which causes SSLRead to return errSecIO, which exits the read loop.
+        // Only signal the connection loop to stop — do NOT touch the fd or fdPtr here.
+        // The connectionLoop owns the fd lifecycle: it sees running=false, falls out of
+        // its read loop (SO_RCVTIMEO bounds this to ≤500ms), then calls cleanupSSL()
+        // which runs SSLClose() so the TLS close-notify alert reaches the peer over
+        // the still-valid socket, *then* closes the fd.
+        //
+        // Earlier versions invalidated `sslFdPtr.pointee = -1` here as a "panic button"
+        // to make SSL callbacks fail with EBADF and force SSLRead to return immediately.
+        // That broke close-notify on every graceful disconnect — the SSLClose write
+        // callback fired against an invalid fd. Without close-notify the phone only
+        // notices the drop via TCP RST/keepalive, which is much slower and during a
+        // post-update relaunch confused it into sending pair=false (unpair-by-remote).
+        // The 500ms RCVTIMEO is plenty fast to exit the loop the regular way.
         running = false
-        sslFdPtr?.pointee = -1
     }
 
     private func cleanupSSL() {
