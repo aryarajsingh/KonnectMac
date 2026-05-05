@@ -354,7 +354,7 @@ class SharePlugin: PluginProtocol {
             return .retryable("phone did not connect to port \(port) (errno=\(errno))")
         }
 
-        Self.configureTransferSocket(fd: clientFd)
+        SocketHelpers.configureTransferSocket(fd: clientFd, ioTimeoutSeconds: Int(Self.socketIOTimeout))
 
         // Get a fresh, single-use SecIdentity for THIS handshake — see TransferIdentity
         // doc in CertificateManager. Without this, SecureTransport's per-SecIdentity
@@ -479,7 +479,7 @@ class SharePlugin: PluginProtocol {
         }
 
         // Graceful close — SO_LINGER drains the kernel send buffer before FIN.
-        Self.enableLinger(fd: clientFd)
+        SocketHelpers.enableLinger(fd: clientFd)
         SSLClose(ctx)
         Darwin.close(clientFd)
 
@@ -635,7 +635,7 @@ class SharePlugin: PluginProtocol {
         }
 
         // Switch to data-transfer socket options (KEEPALIVE + per-I/O timeouts)
-        Self.configureTransferSocket(fd: fd)
+        SocketHelpers.configureTransferSocket(fd: fd, ioTimeoutSeconds: Int(Self.socketIOTimeout))
 
         // Get a fresh, single-use SecIdentity for this handshake — see TransferIdentity
         // doc in CertificateManager. The cached identity is shared with KDEConnection's
@@ -765,34 +765,6 @@ class SharePlugin: PluginProtocol {
         let mbps = elapsed > 0 ? Double(totalReceived) / elapsed / 1_000_000 : 0
         KLog.log("[Share] Received \(totalReceived)/\(expectedSize) bytes in \(String(format: "%.1f", elapsed))s (\(String(format: "%.1f", mbps)) MB/s)")
         return totalReceived
-    }
-
-    // MARK: - Socket helpers (shared by send & receive)
-
-    /// Configure a data-transfer socket: TCP_NODELAY for streaming, SO_KEEPALIVE
-    /// for dead-peer detection, and short per-syscall timeouts so the I/O callback
-    /// returns often enough for higher-level deadlines to kick in.
-    private nonisolated static func configureTransferSocket(fd: Int32) {
-        var nodelay: Int32 = 1
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
-
-        var keepAlive: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
-
-        // Probe quickly (TCP layer) so a dead peer is noticed within ~30s
-        var keepIdle: Int32 = 30
-        setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepIdle, socklen_t(MemoryLayout<Int32>.size))
-
-        var io = timeval(tv_sec: __darwin_time_t(socketIOTimeout), tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &io, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &io, socklen_t(MemoryLayout<timeval>.size))
-    }
-
-    /// Block close() up to 5s waiting for the kernel send buffer to drain — without
-    /// this, the last TLS records of a large file can be discarded when we close.
-    private nonisolated static func enableLinger(fd: Int32) {
-        var lng = linger(l_onoff: 1, l_linger: 5)
-        setsockopt(fd, SOL_SOCKET, SO_LINGER, &lng, socklen_t(MemoryLayout<linger>.size))
     }
 
     // MARK: - Notifications

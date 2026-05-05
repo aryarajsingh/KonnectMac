@@ -100,8 +100,7 @@ class KDEConnection {
             self._fd = socket(AF_INET, SOCK_STREAM, 0)
             guard self._fd >= 0 else { return }
 
-            var nodelay: Int32 = 1
-            setsockopt(self._fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
+            SocketHelpers.enableNoDelay(fd: self._fd)
 
             // Set connect timeout to 10 seconds to prevent blocking GCD threads
             // on unreachable hosts (default TCP timeout is ~75 seconds)
@@ -150,14 +149,7 @@ class KDEConnection {
     }
 
     private func enableKeepAlive() {
-        var keepAlive: Int32 = 1
-        setsockopt(_fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
-        var keepIdle: Int32 = 60  // Start probing after 60s idle (keeps NAT tables alive)
-        setsockopt(_fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepIdle, socklen_t(MemoryLayout<Int32>.size))
-        var keepIntvl: Int32 = 15  // Probe every 15s
-        setsockopt(_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepIntvl, socklen_t(MemoryLayout<Int32>.size))
-        var keepCnt: Int32 = 4  // 4 failed probes = dead (total ~2 min to detect)
-        setsockopt(_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepCnt, socklen_t(MemoryLayout<Int32>.size))
+        SocketHelpers.enableControlKeepAlive(fd: _fd)
     }
 
     private func connectionLoop() {

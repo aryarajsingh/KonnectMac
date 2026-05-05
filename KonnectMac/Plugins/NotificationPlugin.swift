@@ -610,8 +610,7 @@ class NotificationPlugin: PluginProtocol {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
 
-        var nodelay: Int32 = 1
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
+        SocketHelpers.enableNoDelay(fd: fd)
 
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
