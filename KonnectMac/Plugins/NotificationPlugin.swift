@@ -102,15 +102,21 @@ class NotificationPlugin: PluginProtocol {
                 alpha: 1.0)
     }
 
-    /// Real brand assets — bundled in `Assets.xcassets/BrandIcons/` as white-on-transparent
-    /// PNGs sourced from simple-icons (CC0 / public domain). Each entry is the asset
-    /// catalog name + the brand's official background color. We composite the white logo
-    /// onto a rounded brand-colored square at runtime to produce an icon that looks like
-    /// the real iOS-style app icon for that service.
-    private static let brandAssets: [String: (asset: String, color: NSColor)] = [
+    /// Real brand assets — bundled in `Assets.xcassets/BrandIcons/`.
+    ///
+    /// Two flavors, distinguished by `color`:
+    /// - `color: <some>`: monochrome white-on-transparent SVG from simple-icons
+    ///   (CC0 / public domain). At runtime we composite the white logo onto a
+    ///   rounded brand-colored square. This is what most entries use because the
+    ///   simple-icons SVGs are tiny and uniform.
+    /// - `color: nil`: the asset is already a complete app icon (e.g. fetched from
+    ///   the Google Play Store) with its own background, padding, and rounded
+    ///   corners. We render it as-is, no compositing.
+    private static let brandAssets: [String: (asset: String, color: NSColor?)] = [
         // Email
         "com.google.android.gm":            ("gmail",          rgb(0xEA4335)),
         "com.google.android.gm.lite":       ("gmail",          rgb(0xEA4335)),
+        "email.titan.app":                  ("titan",          nil),  // full app icon
         // Messaging
         "com.whatsapp":                     ("whatsapp",       rgb(0x25D366)),
         "com.whatsapp.w4b":                 ("whatsapp",       rgb(0x25D366)),
@@ -142,11 +148,11 @@ class NotificationPlugin: PluginProtocol {
     /// Used only when `brandAssets` doesn't contain the package — a small set covering
     /// dialers and a few other things.
     private static let knownAppIcons: [String: (symbol: String, color: NSColor)] = [
-        // Email (no simple-icons asset for these — Outlook/Yahoo/Titan are not on simple-icons CDN)
+        // Email (no simple-icons asset for these — Outlook/Yahoo are not on simple-icons CDN.
+        // Titan moved to brandAssets above with its real Play Store icon.)
         "com.microsoft.office.outlook":      ("envelope.fill", .systemBlue),
         "com.yahoo.mobile.client.android.mail": ("envelope.fill", .systemPurple),
         "com.samsung.android.email.provider": ("envelope.fill", .systemBlue),
-        "email.titan.app":                   ("envelope.fill", rgb(0x1E1E2E)),  // Titan — dark indigo
         // Messaging (LinkedIn, Teams, Slack are also missing from CDN)
         "com.linkedin.android":              ("briefcase.fill", .systemBlue),
         "com.microsoft.teams":               ("person.2.fill", rgb(0x6264A7)),
@@ -180,25 +186,33 @@ class NotificationPlugin: PluginProtocol {
         return nil
     }
 
-    /// Composite a bundled white-on-transparent brand PNG onto a rounded brand-colored
-    /// square. The brand logo is placed at ~62% of the icon size with equal padding,
-    /// matching the visual weight of a typical iOS-style app icon.
-    private static func renderBrandIcon(packageName: String, assetName: String, background: NSColor) -> String? {
+    /// Render a bundled brand asset to a 64×64 PNG.
+    ///
+    /// If `background` is non-nil, treats the asset as a monochrome white logo and
+    /// composites it onto a rounded brand-colored square (the simple-icons pipeline).
+    /// If `background` is nil, the asset is already a complete app icon — we just
+    /// scale it to 64×64 and write it out.
+    private static func renderBrandIcon(packageName: String, assetName: String, background: NSColor?) -> String? {
         guard let logo = NSImage(named: assetName) else {
             KLog.log("[Notification] Brand asset '\(assetName)' missing for \(packageName)")
             return nil
         }
         let size = NSSize(width: 64, height: 64)
         let finalImage = NSImage(size: size, flipped: false) { rect in
-            let bgRect = rect.insetBy(dx: 2, dy: 2)
-            let path = NSBezierPath(roundedRect: bgRect, xRadius: 14, yRadius: 14)
-            background.setFill()
-            path.fill()
-
-            // Inset the logo so it doesn't touch the edges. 14px on each side gives a
-            // 36×36 logo area inside a 64×64 icon — roughly Apple HIG proportions.
-            let logoRect = NSRect(x: 14, y: 14, width: 36, height: 36)
-            logo.draw(in: logoRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            if let bg = background {
+                // Monochrome logo + brand-color background (simple-icons style).
+                let bgRect = rect.insetBy(dx: 2, dy: 2)
+                let path = NSBezierPath(roundedRect: bgRect, xRadius: 14, yRadius: 14)
+                bg.setFill()
+                path.fill()
+                // Inset 14px on each side gives a 36×36 logo area in a 64×64 icon —
+                // roughly Apple HIG proportions for an iOS-style app icon.
+                let logoRect = NSRect(x: 14, y: 14, width: 36, height: 36)
+                logo.draw(in: logoRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            } else {
+                // Asset is already a full app icon — render edge to edge.
+                logo.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            }
             return true
         }
 
