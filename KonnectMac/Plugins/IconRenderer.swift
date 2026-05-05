@@ -48,6 +48,9 @@ enum IconRenderer {
         // Carrier / SMS apps that send contact pics
         "com.google.android.apps.messaging",
         "com.samsung.android.messaging",
+        // Society / building management — check-in notifications attach the visitor's
+        // photo as the icon payload (every visitor / domestic help is a different face).
+        "com.mygate.user",
     ])
 
     // MARK: - Brand asset / SF Symbol tables
@@ -95,6 +98,8 @@ enum IconRenderer {
         "com.reddit.frontpage":             ("reddit",         rgb(0xFF4500)),
         // Carrier SMS
         "com.google.android.apps.messaging":("googlemessages", rgb(0x1A73E8)),
+        // Society / building management
+        "com.mygate.user":                  ("mygate",         nil),  // full app icon
         // Media / shopping / productivity
         "com.google.android.youtube":       ("youtube",        rgb(0xFF0000)),
         "com.spotify.music":                ("spotify",        rgb(0x1DB954)),
