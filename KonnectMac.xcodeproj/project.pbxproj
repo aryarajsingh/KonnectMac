@@ -20,6 +20,7 @@
 		A10000000000000000000020 /* UDPDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* UDPDiscovery.swift */; };
 		A10000000000000000000021 /* LanServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* LanServer.swift */; };
 		A10000000000000000000022 /* KDEConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* KDEConnection.swift */; };
+		A10000000000000000000023 /* TLSHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000023 /* TLSHelpers.swift */; };
 		A10000000000000000000024 /* VerificationKeyHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000024 /* VerificationKeyHelper.swift */; };
 		A10000000000000000000030 /* PairingHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000030 /* PairingHandler.swift */; };
 		A10000000000000000000040 /* PluginProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000040 /* PluginProtocol.swift */; };
@@ -49,6 +50,7 @@
 		B10000000000000000000020 /* UDPDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UDPDiscovery.swift; sourceTree = "<group>"; };
 		B10000000000000000000021 /* LanServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanServer.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* KDEConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KDEConnection.swift; sourceTree = "<group>"; };
+		B10000000000000000000023 /* TLSHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TLSHelpers.swift; sourceTree = "<group>"; };
 		B10000000000000000000024 /* VerificationKeyHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerificationKeyHelper.swift; sourceTree = "<group>"; };
 		B10000000000000000000030 /* PairingHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingHandler.swift; sourceTree = "<group>"; };
 		B10000000000000000000040 /* PluginProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginProtocol.swift; sourceTree = "<group>"; };
@@ -130,6 +132,7 @@
 				B10000000000000000000020 /* UDPDiscovery.swift */,
 				B10000000000000000000021 /* LanServer.swift */,
 				B10000000000000000000022 /* KDEConnection.swift */,
+				B10000000000000000000023 /* TLSHelpers.swift */,
 				B10000000000000000000024 /* VerificationKeyHelper.swift */,
 			);
 			path = Network;
@@ -241,6 +244,7 @@
 				A10000000000000000000020 /* UDPDiscovery.swift in Sources */,
 				A10000000000000000000021 /* LanServer.swift in Sources */,
 				A10000000000000000000022 /* KDEConnection.swift in Sources */,
+				A10000000000000000000023 /* TLSHelpers.swift in Sources */,
 				A10000000000000000000024 /* VerificationKeyHelper.swift in Sources */,
 				A10000000000000000000030 /* PairingHandler.swift in Sources */,
 				A10000000000000000000040 /* PluginProtocol.swift in Sources */,
