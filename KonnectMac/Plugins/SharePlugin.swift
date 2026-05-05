@@ -108,14 +108,7 @@ class SharePlugin: PluginProtocol {
             let sanitized = sanitizeFilename(filename)
             let payloadSize = packet.payloadSize ?? 0
 
-            // Try multiple ways to extract port — phone implementations differ in JSON typing
-            var port: UInt16? = nil
-            if let pti = packet.payloadTransferInfo {
-                if let p = pti["port"]?.value as? Int, let safePort = UInt16(exactly: p) { port = safePort }
-                else if let p = pti["port"]?.value as? Int64, let safePort = UInt16(exactly: p) { port = safePort }
-                else if let p = pti["port"]?.value as? Double, p > 0, p < 65536 { port = UInt16(p) }
-                else if let s = pti["port"]?.value as? String, let parsed = UInt16(s) { port = parsed }
-            }
+            let port = packet.payloadTransferInfo?["port"]?.asPort()
 
             // Capture host eagerly — kdeConn can drop between this MainActor-hop and the Task
             let host = device.kdeConn?.host ?? ""

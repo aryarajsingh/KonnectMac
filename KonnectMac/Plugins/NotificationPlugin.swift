@@ -457,14 +457,7 @@ class NotificationPlugin: PluginProtocol {
         let replyId: String? = (requestReplyId != nil || repliable) ? notifId : nil
 
         let hasPayload = (packet.payloadSize ?? 0) > 0
-        let payloadPort: UInt16? = {
-            guard let portVal = packet.payloadTransferInfo?["port"]?.value else { return nil }
-            if let i = portVal as? Int, let safePort = UInt16(exactly: i) { return safePort }
-            if let i = portVal as? Int64, let safePort = UInt16(exactly: i) { return safePort }
-            if let d = portVal as? Double, d > 0, d < 65536 { return UInt16(d) }
-            if let s = portVal as? String, let parsed = UInt16(s) { return parsed }
-            return nil
-        }()
+        let payloadPort = packet.payloadTransferInfo?["port"]?.asPort()
 
         KLog.log("[Notification] \(appName) - \(title.prefix(20))... hasIcon=\(hasPayload) port=\(payloadPort.map{String($0)} ?? "nil") pkg=\(packageName)")
 

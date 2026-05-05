@@ -118,3 +118,17 @@ struct AnyCodable: Codable {
         }
     }
 }
+
+extension AnyCodable {
+    /// Best-effort `UInt16` port extraction from a value that may be `Int`, `Int64`,
+    /// `Double`, or `String` depending on the phone's KDE Connect implementation
+    /// (different Android versions / forks JSON-encode `payloadTransferInfo.port`
+    /// inconsistently). Returns `nil` if the value isn't representable as a port.
+    func asPort() -> UInt16? {
+        if let i = value as? Int, let p = UInt16(exactly: i) { return p }
+        if let i = value as? Int64, let p = UInt16(exactly: i) { return p }
+        if let d = value as? Double, d > 0, d < 65536 { return UInt16(d) }
+        if let s = value as? String, let p = UInt16(s) { return p }
+        return nil
+    }
+}
