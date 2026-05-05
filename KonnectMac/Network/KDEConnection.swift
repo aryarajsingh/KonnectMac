@@ -203,28 +203,11 @@ class KDEConnection {
         setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &handshakeTimeout, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &handshakeTimeout, socklen_t(MemoryLayout<timeval>.size))
 
-        // Perform TLS handshake
+        // Perform TLS handshake. TLSHelpers.runHandshake handles the retry-set
+        // (errSSLWouldBlock, errSSLPeerAuthCompleted, errSSLClientCertRequested)
+        // and logs failures with the role label.
         KLog.log("[KDEConn] Starting TLS handshake with \(host) (server=\(isTLSServer))")
-        var handshakeResult: OSStatus
-        var attempts = 0
-        let handshakeDeadline = Date().addingTimeInterval(15)
-        repeat {
-            handshakeResult = SSLHandshake(sslContext!)
-            attempts += 1
-            if attempts <= 5 || attempts % 100 == 0 {
-                KLog.log("[KDEConn] Handshake attempt \(attempts): \(handshakeResult)")
-            }
-            if Date() > handshakeDeadline {
-                KLog.log("[KDEConn] Handshake timed out after \(attempts) attempts")
-                break
-            }
-        } while handshakeResult == errSSLWouldBlock
-                || handshakeResult == -9841  // errSSLServerAuthCompleted
-                || handshakeResult == -9851  // errSSLClientCertRequested
-                || handshakeResult == errSSLPeerAuthCompleted
-
-        guard handshakeResult == errSecSuccess else {
-            KLog.log("[KDEConn] TLS handshake failed: \(handshakeResult) for \(host) after \(attempts) attempts (isTLSServer=\(isTLSServer))")
+        guard TLSHelpers.runHandshake(sslContext!, role: "KDEConn") else {
             cleanupSSL()
             disconnect()
             return
@@ -318,19 +301,12 @@ class KDEConnection {
         guard let ctx = SSLCreateContext(nil, isServer ? .serverSide : .clientSide, .streamType) else { return false }
         sslContext = ctx
 
-        SSLSetIOFuncs(ctx, sslReadFunc, sslWriteFunc)
+        // Allocate fdPtr that the connection holds for its lifetime. `disconnect()`
+        // sets `sslFdPtr.pointee = -1` to short-circuit any in-flight SSL I/O, and
+        // `cleanupSSL()` deallocates it. This lifetime story is critical and unchanged.
         let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
         fdPtr.pointee = _fd
         sslFdPtr = fdPtr
-        SSLSetConnection(ctx, UnsafeMutableRawPointer(fdPtr))
-
-        if isServer {
-            SSLSetClientSideAuthenticate(ctx, .tryAuthenticate)
-        }
-
-        SSLSetProtocolVersionMin(ctx, .tlsProtocol12)
-        SSLSetSessionOption(ctx, .breakOnServerAuth, true)
-        SSLSetSessionOption(ctx, .breakOnClientAuth, true)
 
         // Use a fresh single-use SecIdentity for THIS connection's TLS handshake.
         //
@@ -350,9 +326,12 @@ class KDEConnection {
             return false
         }
         transferIdentity = transferId
-        let certs = [transferId.identity] as CFArray
-        SSLSetCertificate(ctx, certs)
 
+        TLSHelpers.configure(ctx, TLSContextConfig(
+            isServer: isServer,
+            identity: transferId.identity,
+            fdPtr: fdPtr
+        ))
         return true
     }
 
@@ -484,56 +463,6 @@ class KDEConnection {
 
     func getPeerCertificate() -> SecCertificate? {
         guard let ctx = sslContext else { return nil }
-        var trust: SecTrust?
-        SSLCopyPeerTrust(ctx, &trust)
-        guard let peerTrust = trust else { return nil }
-        let certs = SecTrustCopyCertificateChain(peerTrust) as? [SecCertificate]
-        return certs?.first
-    }
-}
-
-// MARK: - SSL I/O callbacks (free functions required by SecureTransport)
-
-private func sslReadFunc(connection: SSLConnectionRef, data: UnsafeMutableRawPointer, dataLength: UnsafeMutablePointer<Int>) -> OSStatus {
-    let fdPtr = connection.assumingMemoryBound(to: Int32.self)
-    let fd = fdPtr.pointee
-    let requested = dataLength.pointee
-
-    let n = Darwin.read(fd, data, requested)
-    if n > 0 {
-        dataLength.pointee = n
-        return n < requested ? errSSLWouldBlock : errSecSuccess
-    } else if n == 0 {
-        dataLength.pointee = 0
-        return errSSLClosedGraceful
-    } else {
-        dataLength.pointee = 0
-        let err = errno
-        if err == EAGAIN || err == EWOULDBLOCK || err == ETIMEDOUT || err == EINTR {
-            return errSSLWouldBlock
-        }
-        return errSecIO
-    }
-}
-
-private func sslWriteFunc(connection: SSLConnectionRef, data: UnsafeRawPointer, dataLength: UnsafeMutablePointer<Int>) -> OSStatus {
-    let fdPtr = connection.assumingMemoryBound(to: Int32.self)
-    let fd = fdPtr.pointee
-    let requested = dataLength.pointee
-
-    let n = Darwin.write(fd, data, requested)
-    if n > 0 {
-        dataLength.pointee = n
-        return n < requested ? errSSLWouldBlock : errSecSuccess
-    } else if n == 0 {
-        dataLength.pointee = 0
-        return errSSLClosedGraceful
-    } else {
-        dataLength.pointee = 0
-        let err = errno
-        if err == EAGAIN || err == EWOULDBLOCK || err == ETIMEDOUT || err == EINTR {
-            return errSSLWouldBlock
-        }
-        return errSecIO
+        return TLSHelpers.copyPeerLeafCertificate(ctx)
     }
 }
