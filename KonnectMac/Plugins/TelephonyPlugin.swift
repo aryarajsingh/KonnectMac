@@ -5,6 +5,12 @@ import CoreAudio
 
 @MainActor
 class TelephonyPlugin: PluginProtocol {
+    /// Window after a call ends during which we ignore "talking" events and
+    /// `onCallStarted` triggers from the phone — covers the dialer's post-call
+    /// notifications (call log, duration) that aren't actually new calls.
+    /// Also bounds the pendingVoIPCaller name resolution window.
+    private static let postCallCooldownSeconds: TimeInterval = 5
+
     let device: Device
     private var wasPlayingMedia = false
     private var mediaPausedByUs = false
@@ -74,7 +80,7 @@ class TelephonyPlugin: PluginProtocol {
                 callStartTime = nil
                 if hadActiveCall {
                     callEndedTime = Date()
-                    KLog.log("[Telephony] Last call ended (isCancel), cooldown active for 5s")
+                    KLog.log("[Telephony] Last call ended (isCancel), cooldown active for \(Int(Self.postCallCooldownSeconds))s")
                 } else {
                     KLog.log("[Telephony] isCancel with no active call — ignoring (no cooldown)")
                 }
@@ -100,7 +106,7 @@ class TelephonyPlugin: PluginProtocol {
             // VoIP caller name resolution
             var displayName = name
             if displayName == "Unknown", let pending = pendingVoIPCaller,
-               Date().timeIntervalSince(pending.time) < 5 {
+               Date().timeIntervalSince(pending.time) < Self.postCallCooldownSeconds {
                 displayName = pending.name
                 callerUnknown = false
                 pendingVoIPCaller = nil
@@ -135,7 +141,7 @@ class TelephonyPlugin: PluginProtocol {
         case "talking":
             if activeCallCount == 0 {
                 // "talking" without prior "ringing" = outgoing call OR stale event.
-                if let ended = callEndedTime, Date().timeIntervalSince(ended) < 5 {
+                if let ended = callEndedTime, Date().timeIntervalSince(ended) < Self.postCallCooldownSeconds {
                     KLog.log("[Telephony] Ignoring 'talking' within \(Int(Date().timeIntervalSince(ended)))s of call end (stale)")
                 } else {
                     // Real outgoing call
@@ -144,7 +150,7 @@ class TelephonyPlugin: PluginProtocol {
 
                     var displayName = name
                     if displayName == "Unknown", let pending = pendingVoIPCaller,
-                       Date().timeIntervalSince(pending.time) < 5 {
+                       Date().timeIntervalSince(pending.time) < Self.postCallCooldownSeconds {
                         displayName = pending.name
                         callerUnknown = false
                         pendingVoIPCaller = nil
@@ -170,7 +176,7 @@ class TelephonyPlugin: PluginProtocol {
         guard currentCallId == nil else { return }
         // Ignore call-start signals within 5s of a call ending — the dialer sends
         // post-call notifications (call log, duration) that aren't actual new calls
-        if let ended = callEndedTime, Date().timeIntervalSince(ended) < 5 {
+        if let ended = callEndedTime, Date().timeIntervalSince(ended) < Self.postCallCooldownSeconds {
             KLog.log("[Telephony] Ignoring onCallStarted within \(Int(Date().timeIntervalSince(ended)))s of call end (post-call notification)")
             return
         }
@@ -214,7 +220,7 @@ class TelephonyPlugin: PluginProtocol {
             callStartTime = nil
             if hadActiveCall {
                 callEndedTime = Date()
-                KLog.log("[Telephony] Last call ended, cooldown active for 5s")
+                KLog.log("[Telephony] Last call ended, cooldown active for \(Int(Self.postCallCooldownSeconds))s")
             } else {
                 KLog.log("[Telephony] onCallEnded with no active call — ignoring (no cooldown)")
             }

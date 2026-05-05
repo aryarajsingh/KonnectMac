@@ -55,209 +55,11 @@ class NotificationPlugin: PluginProtocol {
         "com.linecorp.LINEAPP",
     ])
 
-    // Apps that ship the sender's profile picture as the notification icon payload
-    // instead of the actual app icon. We must never cache these — the payload is per-
-    // notification (a different person every time), and caching one would freeze that
-    // person's face as the "app icon" forever.
-    //
-    // Coverage rule of thumb: any app that's primarily a per-sender DM channel
-    // (email, messaging, social DMs) belongs here. Apps that send their own brand icon
-    // (news, banking, shopping) do NOT.
-    //
-    // For every package listed here, we also fall back to the SF Symbol icon defined
-    // in `knownAppIcons` below. If a package is here without a matching SF Symbol,
-    // notifications from it will be iconless.
-    static let senderPicturePackages = Set([
-        // Email
-        "com.google.android.gm", "com.microsoft.office.outlook",
-        "com.yahoo.mobile.client.android.mail", "com.samsung.android.email.provider",
-        "com.android.email", "com.google.android.gm.lite",
-        "email.titan.app",  // Titan — sends sender's profile pic as the icon payload
-        // Messaging
-        "com.whatsapp", "com.whatsapp.w4b",
-        "org.telegram.messenger", "org.thunderdog.challegram",
-        "com.facebook.orca",  // Messenger
-        "com.discord", "com.snapchat.android",
-        "org.thoughtcrime.securesms",  // Signal
-        "com.microsoft.teams", "com.Slack",
-        "com.google.android.apps.dynamite",  // Google Chat
-        "com.linecorp.LINEAPP",
-        // Social with DMs
-        "com.instagram.android",
-        "com.facebook.katana",
-        "com.twitter.android", "com.x.android",  // X (formerly Twitter)
-        "com.linkedin.android",
-        "com.reddit.frontpage",
-        // Carrier / SMS apps that send contact pics
-        "com.google.android.apps.messaging",
-        "com.samsung.android.messaging",
-    ])
-
-    /// Helper to construct an NSColor from a hex literal — keeps the brand color
-    /// table below readable.
-    private static func rgb(_ hex: UInt32) -> NSColor {
-        NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
-                green: CGFloat((hex >>  8) & 0xFF) / 255,
-                blue:  CGFloat( hex        & 0xFF) / 255,
-                alpha: 1.0)
-    }
-
-    /// Real brand assets — bundled in `Assets.xcassets/BrandIcons/`.
-    ///
-    /// Two flavors, distinguished by `color`:
-    /// - `color: <some>`: monochrome white-on-transparent SVG from simple-icons
-    ///   (CC0 / public domain). At runtime we composite the white logo onto a
-    ///   rounded brand-colored square. This is what most entries use because the
-    ///   simple-icons SVGs are tiny and uniform.
-    /// - `color: nil`: the asset is already a complete app icon (e.g. fetched from
-    ///   the Google Play Store) with its own background, padding, and rounded
-    ///   corners. We render it as-is, no compositing.
-    private static let brandAssets: [String: (asset: String, color: NSColor?)] = [
-        // Email
-        "com.google.android.gm":            ("gmail",          rgb(0xEA4335)),
-        "com.google.android.gm.lite":       ("gmail",          rgb(0xEA4335)),
-        "email.titan.app":                  ("titan",          nil),  // full app icon
-        // Messaging
-        "com.whatsapp":                     ("whatsapp",       rgb(0x25D366)),
-        "com.whatsapp.w4b":                 ("whatsapp",       rgb(0x25D366)),
-        "org.telegram.messenger":           ("telegram",       rgb(0x26A5E4)),
-        "org.thunderdog.challegram":        ("telegram",       rgb(0x26A5E4)),
-        "com.facebook.orca":                ("messenger",      rgb(0x006AFF)),
-        "com.discord":                      ("discord",        rgb(0x5865F2)),
-        "com.snapchat.android":             ("snapchat",       rgb(0xFFFC00)),
-        "org.thoughtcrime.securesms":       ("signal",         rgb(0x3A76F0)),
-        "com.google.android.apps.dynamite": ("googlechat",     rgb(0x00897B)),
-        "com.linecorp.LINEAPP":             ("line",           rgb(0x00B900)),
-        // Social
-        "com.instagram.android":            ("instagram",      rgb(0xE4405F)),
-        "com.facebook.katana":              ("facebook",       rgb(0x1877F2)),
-        "com.twitter.android":              ("x",              rgb(0x000000)),
-        "com.x.android":                    ("x",              rgb(0x000000)),
-        "com.reddit.frontpage":             ("reddit",         rgb(0xFF4500)),
-        // Carrier SMS
-        "com.google.android.apps.messaging":("googlemessages", rgb(0x1A73E8)),
-        // Media / shopping / productivity
-        "com.google.android.youtube":       ("youtube",        rgb(0xFF0000)),
-        "com.spotify.music":                ("spotify",        rgb(0x1DB954)),
-        "com.google.android.apps.maps":     ("googlemaps",     rgb(0x4285F4)),
-        "com.google.android.calendar":      ("googlecalendar", rgb(0x4285F4)),
-        "com.google.android.apps.docs":     ("googledrive",    rgb(0x4285F4)),
-    ]
-
-    /// SF Symbol fallbacks for apps where we don't have a real bundled brand asset.
-    /// Used only when `brandAssets` doesn't contain the package — a small set covering
-    /// dialers and a few other things.
-    private static let knownAppIcons: [String: (symbol: String, color: NSColor)] = [
-        // Email (no simple-icons asset for these — Outlook/Yahoo are not on simple-icons CDN.
-        // Titan moved to brandAssets above with its real Play Store icon.)
-        "com.microsoft.office.outlook":      ("envelope.fill", .systemBlue),
-        "com.yahoo.mobile.client.android.mail": ("envelope.fill", .systemPurple),
-        "com.samsung.android.email.provider": ("envelope.fill", .systemBlue),
-        // Messaging (LinkedIn, Teams, Slack are also missing from CDN)
-        "com.linkedin.android":              ("briefcase.fill", .systemBlue),
-        "com.microsoft.teams":               ("person.2.fill", rgb(0x6264A7)),
-        "com.Slack":                         ("number.square.fill", rgb(0x4A154B)),
-        // Shopping
-        "com.amazon.mShop.android.shopping": ("cart.fill", .systemOrange),
-        // Dialers
-        "com.google.android.dialer":         ("phone.fill", .systemGreen),
-        "com.samsung.android.dialer":        ("phone.fill", .systemGreen),
-        "com.samsung.android.messaging":     ("message.fill", .systemBlue),
-    ]
-
-    private static var fallbackIconCache: [String: String] = [:]
-
-    /// Generate a fallback icon for a package. Prefers a real bundled brand logo
-    /// (Instagram, WhatsApp, etc.) over an SF Symbol, but falls back to SF Symbol when
-    /// no brand asset is bundled. Result is rendered to a 64×64 PNG and cached on disk.
-    private static func fallbackIcon(for packageName: String) -> String? {
-        if let cached = fallbackIconCache[packageName] { return cached }
-
-        // Path 1: real brand asset (preferred).
-        if let brand = brandAssets[packageName] {
-            return renderBrandIcon(packageName: packageName, assetName: brand.asset, background: brand.color)
-        }
-
-        // Path 2: SF Symbol fallback for the long tail.
-        if let info = knownAppIcons[packageName] {
-            return renderSFSymbolIcon(packageName: packageName, symbolName: info.symbol, background: info.color)
-        }
-
-        return nil
-    }
-
-    /// Render a bundled brand asset to a 64×64 PNG.
-    ///
-    /// If `background` is non-nil, treats the asset as a monochrome white logo and
-    /// composites it onto a rounded brand-colored square (the simple-icons pipeline).
-    /// If `background` is nil, the asset is already a complete app icon — we just
-    /// scale it to 64×64 and write it out.
-    private static func renderBrandIcon(packageName: String, assetName: String, background: NSColor?) -> String? {
-        guard let logo = NSImage(named: assetName) else {
-            KLog.log("[Notification] Brand asset '\(assetName)' missing for \(packageName)")
-            return nil
-        }
-        let size = NSSize(width: 64, height: 64)
-        let finalImage = NSImage(size: size, flipped: false) { rect in
-            if let bg = background {
-                // Monochrome logo + brand-color background (simple-icons style).
-                let bgRect = rect.insetBy(dx: 2, dy: 2)
-                let path = NSBezierPath(roundedRect: bgRect, xRadius: 14, yRadius: 14)
-                bg.setFill()
-                path.fill()
-                // Inset 14px on each side gives a 36×36 logo area in a 64×64 icon —
-                // roughly Apple HIG proportions for an iOS-style app icon.
-                let logoRect = NSRect(x: 14, y: 14, width: 36, height: 36)
-                logo.draw(in: logoRect, from: .zero, operation: .sourceOver, fraction: 1.0)
-            } else {
-                // Asset is already a full app icon — render edge to edge.
-                logo.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
-            }
-            return true
-        }
-
-        return writeIconPng(finalImage, packageName: packageName)
-    }
-
-    /// Render an SF Symbol on a brand-colored rounded square — used for apps where we
-    /// don't have a bundled logo asset.
-    private static func renderSFSymbolIcon(packageName: String, symbolName: String, background: NSColor) -> String? {
-        guard let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) else { return nil }
-        let config = NSImage.SymbolConfiguration(pointSize: 36, weight: .medium)
-        guard let configured = image.withSymbolConfiguration(config) else { return nil }
-
-        let size = NSSize(width: 64, height: 64)
-        let finalImage = NSImage(size: size, flipped: false) { rect in
-            let bgRect = rect.insetBy(dx: 2, dy: 2)
-            let path = NSBezierPath(roundedRect: bgRect, xRadius: 14, yRadius: 14)
-            background.setFill()
-            path.fill()
-
-            NSColor.white.setFill()
-            let symbolRect = NSRect(x: 14, y: 14, width: 36, height: 36)
-            configured.draw(in: symbolRect, from: .zero, operation: .sourceAtop, fraction: 1.0)
-            return true
-        }
-
-        return writeIconPng(finalImage, packageName: packageName)
-    }
-
-    /// Write a rendered icon to disk and remember the path. Shared by both renderers.
-    private static func writeIconPng(_ image: NSImage, packageName: String) -> String? {
-        guard let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else { return nil }
-
-        let cachePath = cacheDir + "/fallback-\(packageName.replacingOccurrences(of: ".", with: "_")).png"
-        do {
-            try pngData.write(to: URL(fileURLWithPath: cachePath))
-            fallbackIconCache[packageName] = cachePath
-            return cachePath
-        } catch {
-            KLog.log("[Notification] Failed to write fallback icon for \(packageName): \(error)")
-            return nil
-        }
-    }
+    // Notification icon classification + rendering lives in IconRenderer (Plugins/IconRenderer.swift).
+    // NotificationPlugin still owns the cache directory; it passes `Self.cacheDir` into
+    // IconRenderer.fallbackIcon when looking up brand / fallback icons. The
+    // senderPicturePackages set has moved there too (we read it as
+    // IconRenderer.senderPicturePackages).
 
     init(device: Device) {
         self.device = device
@@ -457,14 +259,7 @@ class NotificationPlugin: PluginProtocol {
         let replyId: String? = (requestReplyId != nil || repliable) ? notifId : nil
 
         let hasPayload = (packet.payloadSize ?? 0) > 0
-        let payloadPort: UInt16? = {
-            guard let portVal = packet.payloadTransferInfo?["port"]?.value else { return nil }
-            if let i = portVal as? Int, let safePort = UInt16(exactly: i) { return safePort }
-            if let i = portVal as? Int64, let safePort = UInt16(exactly: i) { return safePort }
-            if let d = portVal as? Double, d > 0, d < 65536 { return UInt16(d) }
-            if let s = portVal as? String, let parsed = UInt16(s) { return parsed }
-            return nil
-        }()
+        let payloadPort = packet.payloadTransferInfo?["port"]?.asPort()
 
         KLog.log("[Notification] \(appName) - \(title.prefix(20))... hasIcon=\(hasPayload) port=\(payloadPort.map{String($0)} ?? "nil") pkg=\(packageName)")
 
@@ -472,12 +267,12 @@ class NotificationPlugin: PluginProtocol {
         if let cachedPath = Self.iconCache[packageName] {
             KLog.log("[Notification] Cache hit for \(packageName)")
             postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: cachedPath, replyId: replyId)
-        } else if let fallbackPath = Self.fallbackIcon(for: packageName) {
+        } else if let fallbackPath = IconRenderer.fallbackIcon(for: packageName, cacheDir: Self.cacheDir) {
             KLog.log("[Notification] Using fallback icon for \(packageName)")
             postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: fallbackPath, replyId: replyId)
 
             // Still try to download the real icon if available (will replace fallback on next notification)
-            if hasPayload, let port = payloadPort, Self.pendingIconDownloads[packageName] == nil, !Self.senderPicturePackages.contains(packageName) {
+            if hasPayload, let port = payloadPort, Self.pendingIconDownloads[packageName] == nil, !IconRenderer.senderPicturePackages.contains(packageName) {
                 Self.pendingIconDownloads[packageName] = []
                 let storedCert = Config.shared.loadPairedDeviceCert(id: device.id)
                 downloadIcon(host: (device.kdeConn?.host ?? ""), port: port, expectedSize: Int(packet.payloadSize ?? 0), packageName: packageName, storedCertData: storedCert) { iconPath in
@@ -610,8 +405,7 @@ class NotificationPlugin: PluginProtocol {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
 
-        var nodelay: Int32 = 1
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
+        SocketHelpers.enableNoDelay(fd: fd)
 
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -675,50 +469,19 @@ class NotificationPlugin: PluginProtocol {
         let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
         defer { fdPtr.deallocate() }
         fdPtr.pointee = fd
-        SSLSetIOFuncs(ctx, iconSSLRead, iconSSLWrite)
-        SSLSetConnection(ctx, UnsafeMutableRawPointer(fdPtr))
-        SSLSetSessionOption(ctx, .breakOnServerAuth, true)
-        SSLSetCertificate(ctx, [identity] as CFArray)
+        TLSHelpers.configure(ctx, TLSContextConfig(isServer: false, identity: identity, fdPtr: fdPtr))
 
-        // Unique session-resumption ID — disables SecureTransport's process-wide
-        // session cache reuse, which is the cache that goes stale and breaks every
-        // handshake after the first 5–7. Each TLS context now starts from a clean slate.
-        let unique = UUID().uuidString
-        unique.withCString { cStr in
-            SSLSetPeerID(ctx, cStr, strlen(cStr))
-        }
-
-        // Handshake with timeout
-        var status: OSStatus
-        let hsDeadline = Date().addingTimeInterval(15)
-        repeat {
-            status = SSLHandshake(ctx)
-            if Date() > hsDeadline {
-                KLog.log("[Notification] Icon TLS handshake timed out")
-                break
-            }
-        } while status == errSSLWouldBlock || status == errSSLPeerAuthCompleted || status == errSSLClientCertRequested
-
-        guard status == errSecSuccess else {
-            KLog.log("[Notification] Icon TLS handshake failed: \(status)")
-            SSLClose(ctx)
-            Darwin.close(fd)
+        guard TLSHelpers.runHandshake(ctx, role: "Notification icon") else {
+            SSLClose(ctx); Darwin.close(fd)
             return nil
         }
 
         // Validate peer certificate matches the paired device
         if let storedCert = storedCertData, storedCert.count > 1 {
-            var trust: SecTrust?
-            SSLCopyPeerTrust(ctx, &trust)
-            if let peerTrust = trust,
-               let certs = SecTrustCopyCertificateChain(peerTrust) as? [SecCertificate],
-               let peerCert = certs.first {
-                let peerData = SecCertificateCopyData(peerCert) as Data
-                if peerData != storedCert {
-                    KLog.log("[Notification] Icon download peer cert mismatch — rejecting")
-                    SSLClose(ctx); Darwin.close(fd)
-                    return nil
-                }
+            if !TLSHelpers.validatePeer(ctx, expectedCertData: storedCert) {
+                KLog.log("[Notification] Icon download peer cert mismatch — rejecting")
+                SSLClose(ctx); Darwin.close(fd)
+                return nil
             }
         }
 
@@ -778,7 +541,7 @@ class NotificationPlugin: PluginProtocol {
         // DM-capable apps (email, messaging, social DMs) send the SENDER'S profile pic
         // as the icon payload, not the app icon. These change per notification — never
         // cache them. See `senderPicturePackages` above for the full list.
-        let isSenderPicApp = Self.senderPicturePackages.contains(packageName)
+        let isSenderPicApp = IconRenderer.senderPicturePackages.contains(packageName)
         let looksLikeAppIcon = !isSenderPicApp && max(w, h) <= 256 && aspectRatio <= 1.3
         if !looksLikeAppIcon {
             KLog.log("[Notification] Content image detected (\(Int(w))x\(Int(h)) ratio=\(String(format: "%.2f", aspectRatio))) for \(packageName) — using but not caching")
@@ -928,7 +691,7 @@ class NotificationPlugin: PluginProtocol {
             // Migration: any cached icon for a package now in `senderPicturePackages` is
             // a stale sender profile pic from a previous app version that didn't know to
             // skip caching it. Delete it so the brand fallback shows instead.
-            if Self.senderPicturePackages.contains(name) {
+            if IconRenderer.senderPicturePackages.contains(name) {
                 try? FileManager.default.removeItem(atPath: path)
                 purgedSenderPics += 1
                 continue
@@ -1005,44 +768,3 @@ class NotificationPlugin: PluginProtocol {
     }
 }
 
-// MARK: - SSL callbacks for icon download
-
-private func iconSSLRead(connection: SSLConnectionRef, data: UnsafeMutableRawPointer, dataLength: UnsafeMutablePointer<Int>) -> OSStatus {
-    let fdPtr = connection.assumingMemoryBound(to: Int32.self)
-    let requested = dataLength.pointee
-    let n = Darwin.read(fdPtr.pointee, data, requested)
-    if n > 0 {
-        dataLength.pointee = n
-        return n < requested ? errSSLWouldBlock : errSecSuccess
-    }
-    if n == 0 {
-        dataLength.pointee = 0
-        return errSSLClosedGraceful
-    }
-    dataLength.pointee = 0
-    let e = errno
-    if e == EAGAIN || e == EWOULDBLOCK || e == ETIMEDOUT || e == EINTR {
-        return errSSLWouldBlock
-    }
-    return errSecIO
-}
-
-private func iconSSLWrite(connection: SSLConnectionRef, data: UnsafeRawPointer, dataLength: UnsafeMutablePointer<Int>) -> OSStatus {
-    let fdPtr = connection.assumingMemoryBound(to: Int32.self)
-    let requested = dataLength.pointee
-    let n = Darwin.write(fdPtr.pointee, data, requested)
-    if n > 0 {
-        dataLength.pointee = n
-        return n < requested ? errSSLWouldBlock : errSecSuccess
-    }
-    if n == 0 {
-        dataLength.pointee = 0
-        return errSSLClosedGraceful
-    }
-    dataLength.pointee = 0
-    let e = errno
-    if e == EAGAIN || e == EWOULDBLOCK || e == ETIMEDOUT || e == EINTR {
-        return errSSLWouldBlock
-    }
-    return errSecIO
-}

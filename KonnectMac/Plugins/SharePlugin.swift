@@ -108,14 +108,7 @@ class SharePlugin: PluginProtocol {
             let sanitized = sanitizeFilename(filename)
             let payloadSize = packet.payloadSize ?? 0
 
-            // Try multiple ways to extract port — phone implementations differ in JSON typing
-            var port: UInt16? = nil
-            if let pti = packet.payloadTransferInfo {
-                if let p = pti["port"]?.value as? Int, let safePort = UInt16(exactly: p) { port = safePort }
-                else if let p = pti["port"]?.value as? Int64, let safePort = UInt16(exactly: p) { port = safePort }
-                else if let p = pti["port"]?.value as? Double, p > 0, p < 65536 { port = UInt16(p) }
-                else if let s = pti["port"]?.value as? String, let parsed = UInt16(s) { port = parsed }
-            }
+            let port = packet.payloadTransferInfo?["port"]?.asPort()
 
             // Capture host eagerly — kdeConn can drop between this MainActor-hop and the Task
             let host = device.kdeConn?.host ?? ""
@@ -354,7 +347,7 @@ class SharePlugin: PluginProtocol {
             return .retryable("phone did not connect to port \(port) (errno=\(errno))")
         }
 
-        Self.configureTransferSocket(fd: clientFd)
+        SocketHelpers.configureTransferSocket(fd: clientFd, ioTimeoutSeconds: Int(Self.socketIOTimeout))
 
         // Get a fresh, single-use SecIdentity for THIS handshake — see TransferIdentity
         // doc in CertificateManager. Without this, SecureTransport's per-SecIdentity
@@ -397,16 +390,9 @@ class SharePlugin: PluginProtocol {
         let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
         defer { fdPtr.deallocate() }
         fdPtr.pointee = clientFd
-        SSLSetIOFuncs(ctx, shareSSLRead, shareSSLWrite)
-        SSLSetConnection(ctx, UnsafeMutableRawPointer(fdPtr))
-        SSLSetClientSideAuthenticate(ctx, .tryAuthenticate)
-        SSLSetProtocolVersionMin(ctx, .tlsProtocol12)
-        SSLSetSessionOption(ctx, .breakOnServerAuth, true)
-        SSLSetSessionOption(ctx, .breakOnClientAuth, true)
-        SSLSetCertificate(ctx, [identity] as CFArray)
-        Self.applyUniquePeerID(ctx: ctx)
+        TLSHelpers.configure(ctx, TLSContextConfig(isServer: true, identity: identity, fdPtr: fdPtr))
 
-        guard Self.runHandshake(ctx: ctx, role: "send") else {
+        guard TLSHelpers.runHandshake(ctx, role: "Share send", deadline: Self.handshakeTimeout) else {
             SSLClose(ctx); Darwin.close(clientFd)
             // Hand-shake failure is the classic transient mode that retry was built for.
             return .retryable("TLS handshake failed")
@@ -414,7 +400,7 @@ class SharePlugin: PluginProtocol {
 
         // ---- Peer cert validation (paired device must present the cert we recorded) ----
         if let storedCert = storedCert, storedCert.count > 1 {
-            if !Self.validatePeer(ctx: ctx, expectedCertData: storedCert) {
+            if !TLSHelpers.validatePeer(ctx, expectedCertData: storedCert) {
                 KLog.log("[Share] File transfer peer cert mismatch — rejecting")
                 SSLClose(ctx); Darwin.close(clientFd)
                 return .fatal("peer certificate mismatch")
@@ -486,7 +472,7 @@ class SharePlugin: PluginProtocol {
         }
 
         // Graceful close — SO_LINGER drains the kernel send buffer before FIN.
-        Self.enableLinger(fd: clientFd)
+        SocketHelpers.enableLinger(fd: clientFd)
         SSLClose(ctx)
         Darwin.close(clientFd)
 
@@ -642,7 +628,7 @@ class SharePlugin: PluginProtocol {
         }
 
         // Switch to data-transfer socket options (KEEPALIVE + per-I/O timeouts)
-        Self.configureTransferSocket(fd: fd)
+        SocketHelpers.configureTransferSocket(fd: fd, ioTimeoutSeconds: Int(Self.socketIOTimeout))
 
         // Get a fresh, single-use SecIdentity for this handshake — see TransferIdentity
         // doc in CertificateManager. The cached identity is shared with KDEConnection's
@@ -675,22 +661,16 @@ class SharePlugin: PluginProtocol {
         let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
         defer { fdPtr.deallocate() }
         fdPtr.pointee = fd
-        SSLSetIOFuncs(ctx, shareSSLRead, shareSSLWrite)
-        SSLSetConnection(ctx, UnsafeMutableRawPointer(fdPtr))
-        SSLSetProtocolVersionMin(ctx, .tlsProtocol12)
-        SSLSetSessionOption(ctx, .breakOnServerAuth, true)
-        SSLSetSessionOption(ctx, .breakOnClientAuth, true)
-        SSLSetCertificate(ctx, [identity] as CFArray)
-        Self.applyUniquePeerID(ctx: ctx)
+        TLSHelpers.configure(ctx, TLSContextConfig(isServer: false, identity: identity, fdPtr: fdPtr))
 
-        guard Self.runHandshake(ctx: ctx, role: "receive") else {
+        guard TLSHelpers.runHandshake(ctx, role: "Share recv", deadline: Self.handshakeTimeout) else {
             SSLClose(ctx); Darwin.close(fd)
             return 0
         }
 
         // Validate peer certificate matches the paired device
         if let storedCert = storedCertData, storedCert.count > 1 {
-            if !Self.validatePeer(ctx: ctx, expectedCertData: storedCert) {
+            if !TLSHelpers.validatePeer(ctx, expectedCertData: storedCert) {
                 KLog.log("[Share] File download peer cert mismatch — rejecting")
                 SSLClose(ctx); Darwin.close(fd)
                 return 0
@@ -780,86 +760,6 @@ class SharePlugin: PluginProtocol {
         return totalReceived
     }
 
-    // MARK: - Socket helpers (shared by send & receive)
-
-    /// Configure a data-transfer socket: TCP_NODELAY for streaming, SO_KEEPALIVE
-    /// for dead-peer detection, and short per-syscall timeouts so the I/O callback
-    /// returns often enough for higher-level deadlines to kick in.
-    private nonisolated static func configureTransferSocket(fd: Int32) {
-        var nodelay: Int32 = 1
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
-
-        var keepAlive: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
-
-        // Probe quickly (TCP layer) so a dead peer is noticed within ~30s
-        var keepIdle: Int32 = 30
-        setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepIdle, socklen_t(MemoryLayout<Int32>.size))
-
-        var io = timeval(tv_sec: __darwin_time_t(socketIOTimeout), tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &io, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &io, socklen_t(MemoryLayout<timeval>.size))
-    }
-
-    /// Block close() up to 5s waiting for the kernel send buffer to drain — without
-    /// this, the last TLS records of a large file can be discarded when we close.
-    private nonisolated static func enableLinger(fd: Int32) {
-        var lng = linger(l_onoff: 1, l_linger: 5)
-        setsockopt(fd, SOL_SOCKET, SO_LINGER, &lng, socklen_t(MemoryLayout<linger>.size))
-    }
-
-    /// Tag this SSLContext with a unique session-resumption ID so SecureTransport's
-    /// per-peer session cache can never reuse stale state from a previous handshake.
-    /// SecureTransport caches sessions process-wide; without a unique ID it tries to
-    /// resume against the cache, and a mismatch with the phone's state returns
-    /// errSSLInternal (-9810) on the first or second SSLHandshake call.
-    private nonisolated static func applyUniquePeerID(ctx: SSLContext) {
-        let unique = UUID().uuidString
-        unique.withCString { cStr in
-            SSLSetPeerID(ctx, cStr, strlen(cStr))
-        }
-    }
-
-    /// Run the TLS handshake with a hard deadline. Returns true on success.
-    /// Per-syscall timeouts must already be set on the underlying fd, otherwise
-    /// the I/O callback can hang indefinitely and bypass the deadline check.
-    private nonisolated static func runHandshake(ctx: SSLContext, role: String) -> Bool {
-        let deadline = Date().addingTimeInterval(handshakeTimeout)
-        var attempts = 0
-        while Date() < deadline {
-            let status = SSLHandshake(ctx)
-            attempts += 1
-            switch status {
-            case errSecSuccess:
-                return true
-            case errSSLWouldBlock, -9841, errSSLPeerAuthCompleted, errSSLClientCertRequested:
-                // -9841 is errSSLServerAuthCompleted (private constant)
-                continue
-            default:
-                KLog.log("[Share] \(role) TLS handshake failed: status=\(status) attempts=\(attempts)")
-                return false
-            }
-        }
-        KLog.log("[Share] \(role) TLS handshake timed out after \(attempts) attempts")
-        return false
-    }
-
-    /// Validate that the TLS peer's leaf certificate matches the cert we recorded
-    /// during pairing. Returns true if the cert matches OR if the trust chain is
-    /// inaccessible (we don't want to drop a transfer because of a transient
-    /// SecTrust failure on a paired device).
-    private nonisolated static func validatePeer(ctx: SSLContext, expectedCertData: Data) -> Bool {
-        var trust: SecTrust?
-        SSLCopyPeerTrust(ctx, &trust)
-        guard let peerTrust = trust,
-              let certs = SecTrustCopyCertificateChain(peerTrust) as? [SecCertificate],
-              let peerCert = certs.first else {
-            return true
-        }
-        let peerData = SecCertificateCopyData(peerCert) as Data
-        return peerData == expectedCertData
-    }
-
     // MARK: - Notifications
 
     private func showFileReceivedNotification(filename: String, path: String, partial: Bool = false, received: Int = 0, expected: Int = 0) {
@@ -933,43 +833,3 @@ class SharePlugin: PluginProtocol {
     }
 }
 
-// Shared SSL callbacks — handle ETIMEDOUT as non-fatal (critical for SO_RCVTIMEO)
-private func shareSSLRead(connection: SSLConnectionRef, data: UnsafeMutableRawPointer, dataLength: UnsafeMutablePointer<Int>) -> OSStatus {
-    let fdPtr = connection.assumingMemoryBound(to: Int32.self)
-    let requested = dataLength.pointee
-    let n = Darwin.read(fdPtr.pointee, data, requested)
-    if n > 0 {
-        dataLength.pointee = n
-        return n < requested ? errSSLWouldBlock : errSecSuccess
-    }
-    if n == 0 {
-        dataLength.pointee = 0
-        return errSSLClosedGraceful
-    }
-    dataLength.pointee = 0
-    let e = errno
-    if e == EAGAIN || e == EWOULDBLOCK || e == ETIMEDOUT || e == EINTR {
-        return errSSLWouldBlock
-    }
-    return errSecIO
-}
-
-private func shareSSLWrite(connection: SSLConnectionRef, data: UnsafeRawPointer, dataLength: UnsafeMutablePointer<Int>) -> OSStatus {
-    let fdPtr = connection.assumingMemoryBound(to: Int32.self)
-    let requested = dataLength.pointee
-    let n = Darwin.write(fdPtr.pointee, data, requested)
-    if n > 0 {
-        dataLength.pointee = n
-        return n < requested ? errSSLWouldBlock : errSecSuccess
-    }
-    if n == 0 {
-        dataLength.pointee = 0
-        return errSSLClosedGraceful
-    }
-    dataLength.pointee = 0
-    let e = errno
-    if e == EAGAIN || e == EWOULDBLOCK || e == ETIMEDOUT || e == EINTR {
-        return errSSLWouldBlock
-    }
-    return errSecIO
-}
