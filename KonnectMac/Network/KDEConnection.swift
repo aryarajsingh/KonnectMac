@@ -336,7 +336,7 @@ class KDEConnection {
 
         if bytesRead > 0 {
             readBuffer.append(Data(buffer[0..<bytesRead]))
-            KLog.log("[KDEConn] SSLRead: \(bytesRead) bytes (status=\(status), bufferTotal=\(readBuffer.count))")
+            KLog.log("[KDEConn] SSLRead: \(bytesRead) bytes (status=\(status), bufferTotal=\(readBuffer.count))", level: .debug)
         }
 
         if readBuffer.count > 1_048_576 {
