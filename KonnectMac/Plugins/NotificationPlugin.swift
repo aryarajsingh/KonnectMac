@@ -675,50 +675,19 @@ class NotificationPlugin: PluginProtocol {
         let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
         defer { fdPtr.deallocate() }
         fdPtr.pointee = fd
-        SSLSetIOFuncs(ctx, iconSSLRead, iconSSLWrite)
-        SSLSetConnection(ctx, UnsafeMutableRawPointer(fdPtr))
-        SSLSetSessionOption(ctx, .breakOnServerAuth, true)
-        SSLSetCertificate(ctx, [identity] as CFArray)
+        TLSHelpers.configure(ctx, TLSContextConfig(isServer: false, identity: identity, fdPtr: fdPtr))
 
-        // Unique session-resumption ID — disables SecureTransport's process-wide
-        // session cache reuse, which is the cache that goes stale and breaks every
-        // handshake after the first 5–7. Each TLS context now starts from a clean slate.
-        let unique = UUID().uuidString
-        unique.withCString { cStr in
-            SSLSetPeerID(ctx, cStr, strlen(cStr))
-        }
-
-        // Handshake with timeout
-        var status: OSStatus
-        let hsDeadline = Date().addingTimeInterval(15)
-        repeat {
-            status = SSLHandshake(ctx)
-            if Date() > hsDeadline {
-                KLog.log("[Notification] Icon TLS handshake timed out")
-                break
-            }
-        } while status == errSSLWouldBlock || status == errSSLPeerAuthCompleted || status == errSSLClientCertRequested
-
-        guard status == errSecSuccess else {
-            KLog.log("[Notification] Icon TLS handshake failed: \(status)")
-            SSLClose(ctx)
-            Darwin.close(fd)
+        guard TLSHelpers.runHandshake(ctx, role: "Notification icon") else {
+            SSLClose(ctx); Darwin.close(fd)
             return nil
         }
 
         // Validate peer certificate matches the paired device
         if let storedCert = storedCertData, storedCert.count > 1 {
-            var trust: SecTrust?
-            SSLCopyPeerTrust(ctx, &trust)
-            if let peerTrust = trust,
-               let certs = SecTrustCopyCertificateChain(peerTrust) as? [SecCertificate],
-               let peerCert = certs.first {
-                let peerData = SecCertificateCopyData(peerCert) as Data
-                if peerData != storedCert {
-                    KLog.log("[Notification] Icon download peer cert mismatch — rejecting")
-                    SSLClose(ctx); Darwin.close(fd)
-                    return nil
-                }
+            if !TLSHelpers.validatePeer(ctx, expectedCertData: storedCert) {
+                KLog.log("[Notification] Icon download peer cert mismatch — rejecting")
+                SSLClose(ctx); Darwin.close(fd)
+                return nil
             }
         }
 
@@ -1005,44 +974,3 @@ class NotificationPlugin: PluginProtocol {
     }
 }
 
-// MARK: - SSL callbacks for icon download
-
-private func iconSSLRead(connection: SSLConnectionRef, data: UnsafeMutableRawPointer, dataLength: UnsafeMutablePointer<Int>) -> OSStatus {
-    let fdPtr = connection.assumingMemoryBound(to: Int32.self)
-    let requested = dataLength.pointee
-    let n = Darwin.read(fdPtr.pointee, data, requested)
-    if n > 0 {
-        dataLength.pointee = n
-        return n < requested ? errSSLWouldBlock : errSecSuccess
-    }
-    if n == 0 {
-        dataLength.pointee = 0
-        return errSSLClosedGraceful
-    }
-    dataLength.pointee = 0
-    let e = errno
-    if e == EAGAIN || e == EWOULDBLOCK || e == ETIMEDOUT || e == EINTR {
-        return errSSLWouldBlock
-    }
-    return errSecIO
-}
-
-private func iconSSLWrite(connection: SSLConnectionRef, data: UnsafeRawPointer, dataLength: UnsafeMutablePointer<Int>) -> OSStatus {
-    let fdPtr = connection.assumingMemoryBound(to: Int32.self)
-    let requested = dataLength.pointee
-    let n = Darwin.write(fdPtr.pointee, data, requested)
-    if n > 0 {
-        dataLength.pointee = n
-        return n < requested ? errSSLWouldBlock : errSecSuccess
-    }
-    if n == 0 {
-        dataLength.pointee = 0
-        return errSSLClosedGraceful
-    }
-    dataLength.pointee = 0
-    let e = errno
-    if e == EAGAIN || e == EWOULDBLOCK || e == ETIMEDOUT || e == EINTR {
-        return errSSLWouldBlock
-    }
-    return errSecIO
-}
