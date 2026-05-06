@@ -407,7 +407,7 @@ struct AboutTab: View {
                 Text("No third-party dependencies")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text("© \(Calendar.current.component(.year, from: Date())) Aryaraj Singh")
+                Text("© \(String(Calendar.current.component(.year, from: Date()))) Aryaraj Singh")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.top, 4)
