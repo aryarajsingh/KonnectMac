@@ -360,15 +360,11 @@ class TelephonyPlugin: PluginProtocol {
         let callId = currentCallId
 
         guard let getInfo = mrGetNowPlayingInfo else {
-            // MediaRemote unavailable — fall back to CoreAudio (less precise but works)
-            let audioPlaying = isAudioOutputActive()
-            KLog.log("[Telephony] MediaRemote unavailable, CoreAudio fallback: \(audioPlaying)")
-            mediaPausedByUs = true
-            wasPlayingMedia = audioPlaying
-            if audioPlaying, let send = mrSendCommand {
-                let _ = send(1, nil)
-                KLog.log("[Telephony] Paused via CoreAudio fallback")
-            }
+            // MediaRemote unavailable — we can't tell whether a real media player is
+            // playing. CoreAudio catches ALL audio (system sounds, the call chime), so
+            // trusting it here sets wasPlayingMedia on nothing and triggers a spurious
+            // resume when the call ends. Without a reliable signal, do nothing.
+            KLog.log("[Telephony] MediaRemote unavailable — skipping media control")
             return
         }
 
@@ -387,32 +383,14 @@ class TelephonyPlugin: PluginProtocol {
                 let rate = info["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? Double ?? 0
                 isPlaying = rate > 0
             } else {
-                // No registered Now Playing app — browser audio, web player, etc.
-                // Fall back to CoreAudio (synchronous, catches all audio output)
-                // This is safe to call from background queue
-                var defaultDevice = AudioDeviceID(0)
-                var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-                var address = AudioObjectPropertyAddress(
-                    mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-                    mScope: kAudioObjectPropertyScopeGlobal,
-                    mElement: kAudioObjectPropertyElementMain
-                )
-                let st = AudioObjectGetPropertyData(
-                    AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &defaultDevice
-                )
-                if st == noErr, defaultDevice != 0 {
-                    var isRunning: UInt32 = 0
-                    var runningSize = UInt32(MemoryLayout<UInt32>.size)
-                    var runningAddress = AudioObjectPropertyAddress(
-                        mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-                        mScope: kAudioObjectPropertyScopeGlobal,
-                        mElement: kAudioObjectPropertyElementMain
-                    )
-                    AudioObjectGetPropertyData(defaultDevice, &runningAddress, 0, nil, &runningSize, &isRunning)
-                    isPlaying = isRunning > 0
-                } else {
-                    isPlaying = false
-                }
+                // No registered Now Playing app → no media player for us to pause or
+                // resume. Do NOT fall back to CoreAudio here: it reports ALL audio
+                // output (the call-notification chime, system sounds, audio units that
+                // stay warm while idle), which would set wasPlayingMedia and fire a
+                // spurious MRMediaRemoteCommandPlay when the call ends — starting an
+                // open-but-idle media app. Modern browsers/web players register with
+                // Now Playing, so genuine playback is handled by the branch above.
+                isPlaying = false
             }
 
             Task { @MainActor in
@@ -428,13 +406,9 @@ class TelephonyPlugin: PluginProtocol {
 
                 if isPlaying, let send = self.mrSendCommand {
                     let _ = send(1, nil) // MRMediaRemoteCommandPause = 1
-                    if hasNowPlayingApp {
-                        KLog.log("[Telephony] Paused media (MediaRemote: playbackRate > 0)")
-                    } else {
-                        KLog.log("[Telephony] Paused media (CoreAudio fallback: browser/web audio)")
-                    }
+                    KLog.log("[Telephony] Paused media (MediaRemote: playbackRate > 0)")
                 } else {
-                    KLog.log("[Telephony] No media active (MediaRemote=\(hasNowPlayingApp ? "paused" : "empty"), CoreAudio=\(!hasNowPlayingApp ? "silent" : "n/a"))")
+                    KLog.log("[Telephony] No media playing (MediaRemote: \(hasNowPlayingApp ? "paused" : "no Now Playing app"))")
                 }
             }
         }
