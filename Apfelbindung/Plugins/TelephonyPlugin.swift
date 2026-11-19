@@ -242,34 +242,13 @@ class TelephonyPlugin: PluginProtocol {
         content.body = body
         content.sound = .default
 
-        // Try to get phone app icon from NotificationPlugin cache
-        if let notifPlugin = device.plugins["notification"] as? NotificationPlugin,
-           let iconPath = notifPlugin.getCachedIconPath(packageName: "com.samsung.android.dialer")
-               ?? notifPlugin.getCachedIconPath(packageName: "com.android.dialer")
-               ?? notifPlugin.getCachedIconPath(packageName: "com.google.android.dialer") {
-            // Hardlink so UNNotificationAttachment move doesn't destroy the cache
-            let linkPath = NSTemporaryDirectory() + "konnect-call-\(UUID().uuidString).png"
-            if let _ = try? FileManager.default.linkItem(atPath: iconPath, toPath: linkPath) {
-                if let attachment = try? UNNotificationAttachment(identifier: "icon", url: URL(fileURLWithPath: linkPath), options: [
-                    UNNotificationAttachmentOptionsTypeHintKey: "public.png",
-                    UNNotificationAttachmentOptionsThumbnailClippingRectKey: CGRect(x: 0, y: 0, width: 1, height: 1).dictionaryRepresentation
-                ]) {
-                    content.attachments = [attachment]
-                } else {
-                    try? FileManager.default.removeItem(atPath: linkPath)
-                }
-            }
-        } else {
-            // SF Symbol fallback
-            let symbolName = isMissed ? "phone.arrow.down.left" : "phone.fill"
-            let color = isMissed ? NSColor.systemRed : NSColor.systemGreen
-            if let iconPath = createSFSymbolIcon(named: symbolName, color: color) {
-                if let attachment = try? UNNotificationAttachment(identifier: "icon", url: URL(fileURLWithPath: iconPath), options: [
-                    UNNotificationAttachmentOptionsTypeHintKey: "public.png"
-                ]) {
-                    content.attachments = [attachment]
-                }
-            }
+        let symbolName = isMissed ? "phone.arrow.down.left" : "phone.fill"
+        let color = isMissed ? NSColor.systemRed : NSColor.systemGreen
+        if let iconPath = createSFSymbolIcon(named: symbolName, color: color),
+           let attachment = try? UNNotificationAttachment(identifier: "icon", url: URL(fileURLWithPath: iconPath), options: [
+               UNNotificationAttachmentOptionsTypeHintKey: "public.png"
+           ]) {
+            content.attachments = [attachment]
         }
 
         if !isMissed {

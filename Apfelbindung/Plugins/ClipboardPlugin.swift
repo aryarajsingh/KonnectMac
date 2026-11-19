@@ -4,8 +4,11 @@ import AppKit
 @MainActor
 class ClipboardPlugin: PluginProtocol {
     let device: Device
-    private var lastSentContent = ""
-    var lastReceivedContent = ""
+    // All plugins share one Mac pasteboard. Track its origin by change count,
+    // not by text (which the user can legitimately copy again later).
+    private static var observedChangeCount = NSPasteboard.general.changeCount
+    private static var updateTimestamp: Int64 = 0
+    private static var remoteChangeCount: Int?
     private var clipboardTimer: Timer?
     private var lastChangeCount = 0
 
@@ -23,15 +26,20 @@ class ClipboardPlugin: PluginProtocol {
 
     func start() {
         guard clipboardTimer == nil else { return }
-        startMonitoring()
+        Self.observeLocalChange()
+        lastChangeCount = Self.observedChangeCount
+        clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkClipboard() }
+        }
+        if Config.shared.clipboardEnabled(.send, for: device.id),
+           Self.updateTimestamp > 0, Self.remoteChangeCount != Self.observedChangeCount {
+            sendCurrentClipboard(timestamp: Self.updateTimestamp)
+        }
     }
 
     func stop() {
         clipboardTimer?.invalidate()
         clipboardTimer = nil
-        // Clear echo prevention flags — stale values prevent sync after reconnect
-        lastSentContent = ""
-        lastReceivedContent = ""
     }
 
     func canHandle(type: String) -> Bool {
@@ -39,45 +47,75 @@ class ClipboardPlugin: PluginProtocol {
     }
 
     func handle(packet: NetworkPacket) {
+        guard Config.shared.clipboardEnabled(.receive, for: device.id) else { return }
         guard let content = packet.body["content"]?.value as? String else { return }
-        guard content.utf8.count <= 131072 else { KLog.log("[Clipboard] Rejected oversized incoming: \(content.utf8.count) bytes"); return }
-        guard content != lastReceivedContent else { return }
-        guard content != lastSentContent else { return }
+        guard content.utf8.count <= 131072 else { return }
+        Self.observeLocalChange()
+        var remoteTimestamp: Int64?
+        if packet.type == "kdeconnect.clipboard.connect" {
+            let value = packet.body["timestamp"]?.value
+            let timestamp = value as? Int64 ?? (value as? Int).map { Int64($0) }
+            guard let timestamp, timestamp > 0, timestamp >= Self.updateTimestamp else { return }
+            remoteTimestamp = min(timestamp, Self.nowMilliseconds())
+        }
 
-        lastReceivedContent = content
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(content, forType: .string)
-        lastChangeCount = pasteboard.changeCount
-
-        KLog.log("[Clipboard] Received from \(device.name): \(content.utf8.count) bytes")
-    }
-
-    private func startMonitoring() {
-        lastChangeCount = NSPasteboard.general.changeCount
-        clipboardTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.checkClipboard()
-            }
+        if Self.applyRemoteText(content, timestamp: remoteTimestamp) {
+            KLog.log("[Clipboard] Received from \(device.name): \(content.utf8.count) bytes")
         }
     }
 
-    private func checkClipboard() {
+    @discardableResult
+    static func applyRemoteText(_ text: String, timestamp: Int64? = nil) -> Bool {
         let pasteboard = NSPasteboard.general
-        guard pasteboard.changeCount != lastChangeCount else { return }
-        lastChangeCount = pasteboard.changeCount
+        guard pasteboard.string(forType: .string) != text else { return false }
+        pasteboard.clearContents()
+        let written = pasteboard.setString(text, forType: .string)
+        observedChangeCount = pasteboard.changeCount
+        remoteChangeCount = observedChangeCount
+        updateTimestamp = timestamp ?? nowMilliseconds()
+        return written
+    }
 
-        guard let content = pasteboard.string(forType: .string) else { return }
-        guard content != lastReceivedContent else { return }
-        guard content != lastSentContent else { return }
+    private static func observeLocalChange() {
+        let count = NSPasteboard.general.changeCount
+        guard count != observedChangeCount else { return }
+        observedChangeCount = count
+        remoteChangeCount = nil
+        updateTimestamp = nowMilliseconds()
+    }
+
+    private static func nowMilliseconds() -> Int64 {
+        Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    private func checkClipboard() {
+        guard clipboardTimer != nil else { return }
+        Self.observeLocalChange()
+        let count = Self.observedChangeCount
+        guard count != lastChangeCount else { return }
+        lastChangeCount = count
+        guard Self.remoteChangeCount != count,
+              Config.shared.clipboardEnabled(.send, for: device.id) else { return }
+        sendCurrentClipboard()
+    }
+
+    func sendCurrentClipboard() {
+        sendCurrentClipboard(timestamp: nil)
+    }
+
+    private func sendCurrentClipboard(timestamp: Int64?) {
+        guard device.connectionState == .paired,
+              let content = NSPasteboard.general.string(forType: .string) else { return }
         // Cap clipboard sync at 128KB to prevent OOM on the phone
         guard content.utf8.count <= 131072 else {
             KLog.log("[Clipboard] Skipping oversized clipboard: \(content.utf8.count) bytes")
             return
         }
 
-        lastSentContent = content
-        let packet = NetworkPacket(type: "kdeconnect.clipboard", body: ["content": AnyCodable(content)])
+        var body = ["content": AnyCodable(content)]
+        if let timestamp { body["timestamp"] = AnyCodable(timestamp) }
+        let type = timestamp == nil ? "kdeconnect.clipboard" : "kdeconnect.clipboard.connect"
+        let packet = NetworkPacket(type: type, body: body)
         device.send(packet)
         KLog.log("[Clipboard] Sent to \(device.name) (\(content.utf8.count) bytes)")
     }

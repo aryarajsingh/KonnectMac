@@ -84,7 +84,7 @@ private struct NotificationRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            appIcon
+            NotificationAppIcon(item: item)
                 .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -110,6 +110,7 @@ private struct NotificationRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
                 }
+                NotificationActionsMenu(item: item)
             }
 
             Button {
@@ -132,11 +133,13 @@ private struct NotificationRow: View {
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
     }
+}
 
-    @ViewBuilder
-    private var appIcon: some View {
-        if let iconPath = item.iconPath,
-           let img = NSImage(contentsOfFile: iconPath) {
+struct NotificationAppIcon: View {
+    let item: NotificationItem
+
+    var body: some View {
+        if let data = item.imageData, let img = NSImage(data: data) {
             Image(nsImage: img)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
@@ -145,10 +148,42 @@ private struct NotificationRow: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color.primary.opacity(0.06))
-                Image(systemName: "app")
+                Image(systemName: Self.fallbackSymbols[item.content.packageName] ?? "app")
                     .font(.system(size: 14))
                     .foregroundStyle(.quaternary)
             }
+        }
+    }
+
+    private static let fallbackSymbols: [String: String] = [
+        "com.google.android.gm": "envelope.fill",
+        "com.microsoft.office.outlook": "envelope.fill",
+        "com.whatsapp": "message.fill",
+        "com.whatsapp.w4b": "message.fill",
+        "com.google.android.apps.messaging": "message.fill",
+        "org.telegram.messenger": "paperplane.fill",
+        "com.instagram.android": "camera.fill",
+        "com.google.android.youtube": "play.rectangle.fill",
+        "com.spotify.music": "music.note",
+        "com.google.android.dialer": "phone.fill",
+        "com.samsung.android.dialer": "phone.fill"
+    ]
+}
+
+struct NotificationActionsMenu: View {
+    let item: NotificationItem
+
+    var body: some View {
+        if !item.content.actions.isEmpty {
+            Menu("Phone actions") {
+                ForEach(item.content.actions.indices, id: \.self) { index in
+                    let action = item.content.actions[index]
+                    Button(action) { NotificationStore.shared.performAction(action, on: item) }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
+            .fixedSize()
         }
     }
 }

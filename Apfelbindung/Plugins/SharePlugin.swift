@@ -50,12 +50,7 @@ class SharePlugin: PluginProtocol {
 
         if let text = packet.body["text"]?.value as? String {
             KLog.log("[Share] Received text (\(text.utf8.count) bytes)")
-            // Prevent ClipboardPlugin from echoing this text back to the phone
-            if let clipboardPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
-                clipboardPlugin.lastReceivedContent = text
-            }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+            ClipboardPlugin.applyRemoteText(text)
             return
         }
 

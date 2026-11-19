@@ -451,9 +451,11 @@ struct MainView: View {
                 }
 
                 // Plugins
-                if let device = pairedDevices.first {
-                    SettingsGroupBox("Plugins \u{2014} \(device.name)") {
-                        PluginToggles(device: device)
+                if !pairedDevices.isEmpty {
+                    SettingsGroupBox("Plugins") {
+                        ForEach(pairedDevices) { device in
+                            PluginListView(device: device)
+                        }
                     }
                 }
 
@@ -624,7 +626,7 @@ private struct MainNotificationRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            appIcon
+            NotificationAppIcon(item: item)
                 .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -650,6 +652,7 @@ private struct MainNotificationRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
                 }
+                NotificationActionsMenu(item: item)
             }
 
             Button {
@@ -671,25 +674,6 @@ private struct MainNotificationRow: View {
         )
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
-    }
-
-    @ViewBuilder
-    private var appIcon: some View {
-        if let iconPath = item.iconPath,
-           let img = NSImage(contentsOfFile: iconPath) {
-            Image(nsImage: img)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-        } else {
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.primary.opacity(0.06))
-                Image(systemName: "app")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.quaternary)
-            }
-        }
     }
 }
 
@@ -824,46 +808,6 @@ private struct PairedDevicesList: View {
                 }
             }
         }
-    }
-}
-
-private struct PluginToggles: View {
-    let device: Device
-    @State private var enabledPlugins: Set<String> = []
-
-    private let allPlugins: [(key: String, name: String, icon: String)] = [
-        ("ping", "Ping", "bell.fill"),
-        ("battery", "Battery", "battery.100"),
-        ("notification", "Notifications", "app.badge.fill"),
-        ("telephony", "Telephony", "phone.fill"),
-        ("sms", "SMS Messages", "message.fill"),
-        ("clipboard", "Clipboard Sync", "doc.on.clipboard.fill"),
-        ("findmyphone", "Find My Phone", "location.fill"),
-        ("share", "File Transfer", "paperplane.fill"),
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(allPlugins, id: \.key) { plugin in
-                HStack(spacing: 10) {
-                    Image(systemName: plugin.icon).frame(width: 16).foregroundColor(.secondary)
-                    Text(plugin.name).font(.system(size: 12, weight: .medium))
-                    Spacer()
-                    Toggle("", isOn: Binding(
-                        get: { enabledPlugins.contains(plugin.key) },
-                        set: { on in
-                            if on { enabledPlugins.insert(plugin.key) } else { enabledPlugins.remove(plugin.key) }
-                            Config.shared.setEnabledPlugins(enabledPlugins, for: device.id)
-                            DeviceManager.shared.reloadPlugins(for: device.id)
-                        }
-                    ))
-                    .toggleStyle(.switch).controlSize(.mini)
-                }
-                .padding(.vertical, 3)
-                if plugin.key != allPlugins.last?.key { Divider().padding(.leading, 26) }
-            }
-        }
-        .onAppear { enabledPlugins = Config.shared.enabledPlugins(for: device.id) }
     }
 }
 

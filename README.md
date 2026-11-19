@@ -54,10 +54,10 @@ No Electron. No web views. No third-party dependencies. Pure Swift + AppKit + Sw
 
 | Feature | Description |
 |---------|-------------|
-| **Notification center** | Mirror your phone notifications on the Mac with app icons, history, and OTP detection with one-click copy |
+| **Notification center** | Mirror phone notifications and their images, filter incoming apps per device, and trigger supported Android actions |
 | **SMS viewer** | Full conversations and threads; read and reply from the Mac |
 | **Call alerts** | Incoming and outgoing calls, with automatic media pause/resume |
-| **Clipboard sync** | Bidirectional text clipboard sharing between Mac and phone |
+| **Clipboard sync** | Bidirectional text clipboard sharing, with separate send and receive controls per device |
 | **File transfer** | Encrypted TLS transfers — drag files onto the menu bar icon |
 | **Battery** | Phone battery level in the menu bar with low-battery alerts |
 | **Find my phone** | Ring your phone from the Mac |
@@ -79,11 +79,11 @@ No Electron. No web views. No third-party dependencies. Pure Swift + AppKit + Sw
 ## KDE Connect parity
 
 Apfelbindung currently covers **8 of the 25 feature areas** exposed by the KDE Connect
-desktop client (3 of them partially), and the gap is documented plugin by plugin:
+desktop client (2 of them partially), and the gap is documented plugin by plugin:
 
 - ✅ Notification mirroring, SMS, calls, clipboard (text), file transfer, ping, battery,
   find my phone
-- 🚧 Partial: notification actions, SMS/MMS attachments, clipboard files
+- 🚧 Partial: SMS/MMS attachments, clipboard files
 - ⏳ Pending: remote input (trackpad/keyboard), presenter, media control, system volume,
   remote commands, lock device, contacts, connectivity report, SFTP, and more
 - ❌ Not applicable on macOS: virtual monitor
@@ -127,6 +127,9 @@ adb shell appops set org.kde.kdeconnect_tp RECEIVE_SENSITIVE_NOTIFICATIONS allow
 ```
 
 The onboarding wizard covers this step too.
+
+See [Notificaciones y portapapeles](docs/notifications-and-clipboard.md) for the
+per-app controls, Android clipboard restrictions, and verification steps.
 
 ## How it works
 

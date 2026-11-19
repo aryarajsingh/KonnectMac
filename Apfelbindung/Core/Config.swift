@@ -38,7 +38,6 @@ class Config: ObservableObject {
         "kdeconnect.ping",
         "kdeconnect.battery",
         "kdeconnect.notification",
-        "kdeconnect.notification.request",
         "kdeconnect.telephony",
         "kdeconnect.clipboard",
         "kdeconnect.clipboard.connect",
@@ -51,6 +50,7 @@ class Config: ObservableObject {
     let outgoingCapabilities: [String] = [
         "kdeconnect.ping",
         "kdeconnect.battery.request",
+        "kdeconnect.notification.request",
         "kdeconnect.notification.reply",
         "kdeconnect.notification.action",
         "kdeconnect.telephony.request_mute",
@@ -135,6 +135,8 @@ class Config: ObservableObject {
         var names = UserDefaults.standard.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
         names.removeValue(forKey: id)
         UserDefaults.standard.set(names, forKey: "pairedDeviceNames")
+        UserDefaults.standard.removeObject(forKey: "notificationApps_\(id)")
+        UserDefaults.standard.removeObject(forKey: "notificationAppRules_\(id)")
     }
 
     func savedDeviceName(for id: String) -> String? {
@@ -183,7 +185,50 @@ class Config: ObservableObject {
     }
 
     func setEnabledPlugins(_ plugins: Set<String>, for deviceId: String) {
+        objectWillChange.send()
         UserDefaults.standard.set(Array(plugins), forKey: "enabledPlugins_\(deviceId)")
+    }
+
+    func notificationApps(for deviceId: String) -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: "notificationApps_\(deviceId)") as? [String: String] ?? [:]
+    }
+
+    func recordNotificationApp(_ package: String, name: String, for deviceId: String) {
+        guard !package.isEmpty, package.utf8.count <= 256, name.utf8.count <= 256 else { return }
+        var apps = notificationApps(for: deviceId)
+        guard apps[package] != name, apps[package] != nil || apps.count < 500 else { return }
+        objectWillChange.send()
+        apps[package] = name
+        UserDefaults.standard.set(apps, forKey: "notificationApps_\(deviceId)")
+    }
+
+    func receivesNotifications(from package: String, for deviceId: String) -> Bool {
+        let overrides = UserDefaults.standard.dictionary(forKey: "notificationAppRules_\(deviceId)") as? [String: Bool]
+        if let enabled = overrides?[package] { return enabled }
+        return !["android", "com.android.systemui", "com.android.settings", "com.android.vending",
+                  "org.kde.kdeconnect_tp", "org.kde.kdeconnect_tp.debug"].contains(package)
+            && !package.hasPrefix("com.android.providers.")
+    }
+
+    func setReceivesNotifications(_ enabled: Bool, from package: String, for deviceId: String) {
+        let key = "notificationAppRules_\(deviceId)"
+        var overrides = UserDefaults.standard.dictionary(forKey: key) as? [String: Bool] ?? [:]
+        objectWillChange.send()
+        overrides[package] = enabled
+        UserDefaults.standard.set(overrides, forKey: key)
+    }
+
+    enum ClipboardDirection: String {
+        case send, receive
+    }
+
+    func clipboardEnabled(_ direction: ClipboardDirection, for deviceId: String) -> Bool {
+        UserDefaults.standard.object(forKey: "clipboard_\(direction.rawValue)_\(deviceId)") as? Bool ?? true
+    }
+
+    func setClipboardEnabled(_ enabled: Bool, _ direction: ClipboardDirection, for deviceId: String) {
+        objectWillChange.send()
+        UserDefaults.standard.set(enabled, forKey: "clipboard_\(direction.rawValue)_\(deviceId)")
     }
 
     private func pairingDirectory() -> String {

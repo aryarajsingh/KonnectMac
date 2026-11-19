@@ -417,7 +417,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             if let code = userInfo["otpCode"] as? String {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(code, forType: .string)
-                KLog.log("[OTP] Copied code to clipboard: \(code)")
+                KLog.log("[OTP] Copied code to clipboard")
             }
         default:
             break

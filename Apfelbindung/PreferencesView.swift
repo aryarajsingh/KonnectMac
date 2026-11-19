@@ -301,26 +301,30 @@ struct PluginsTab: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ForEach(Array(pairedDevices), id: \.id) { device in
-                    PluginListView(device: device)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(pairedDevices) { device in
+                            PluginListView(device: device)
+                        }
+                    }
                 }
             }
-
-            Spacer()
         }
         .padding()
     }
 }
 
 struct PluginListView: View {
-    let device: Device
-    @State private var enabledPlugins: Set<String> = []
+    @ObservedObject var device: Device
+    @ObservedObject private var config = Config.shared
+    @State private var showNotificationApps = false
 
     private let allPlugins: [(key: String, name: String, description: String, icon: String)] = [
         ("ping", "Ping", "Send and receive pings", "bell.fill"),
         ("battery", "Battery", "Show phone battery level", "battery.100"),
         ("notification", "Notifications", "Mirror phone notifications", "app.badge.fill"),
         ("telephony", "Telephony", "Call alerts, media pause", "phone.fill"),
+        ("sms", "SMS Messages", "Read and send messages", "message.fill"),
         ("clipboard", "Clipboard Sync", "Share clipboard content", "doc.on.clipboard.fill"),
         ("findmyphone", "Find My Phone", "Ring your phone remotely", "location.fill"),
         ("share", "File Transfer", "Send and receive files", "paperplane.fill"),
@@ -351,19 +355,33 @@ struct PluginListView: View {
                         }
                         Spacer()
                         Toggle("", isOn: Binding(
-                            get: { enabledPlugins.contains(plugin.key) },
+                            get: { config.enabledPlugins(for: device.id).contains(plugin.key) },
                             set: { on in
+                                var enabledPlugins = config.enabledPlugins(for: device.id)
                                 if on { enabledPlugins.insert(plugin.key) }
                                 else { enabledPlugins.remove(plugin.key) }
-                                Config.shared.setEnabledPlugins(enabledPlugins, for: device.id)
+                                config.setEnabledPlugins(enabledPlugins, for: device.id)
                                 DeviceManager.shared.reloadPlugins(for: device.id)
                             }
                         ))
                         .toggleStyle(.switch)
                         .controlSize(.mini)
+                        .accessibilityLabel(Text(plugin.name))
                     }
                     .padding(.vertical, 3)
 
+                    if config.enabledPlugins(for: device.id).contains(plugin.key) {
+                        if plugin.key == "notification" {
+                            Button("Notification apps…") { showNotificationApps = true }
+                                .controlSize(.small)
+                                .padding(.leading, 26)
+                                .padding(.bottom, 5)
+                        } else if plugin.key == "clipboard" {
+                            clipboardSettings
+                                .padding(.leading, 26)
+                                .padding(.bottom, 5)
+                        }
+                    }
                     if plugin.key != allPlugins.last?.key {
                         Divider().padding(.leading, 26)
                     }
@@ -371,9 +389,83 @@ struct PluginListView: View {
             }
             .padding(4)
         }
-        .onAppear {
-            enabledPlugins = Config.shared.enabledPlugins(for: device.id)
+        .sheet(isPresented: $showNotificationApps) {
+            NotificationAppsSettings(device: device)
         }
+    }
+
+    private var clipboardSettings: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Send Mac clipboard automatically", isOn: clipboardBinding(.send))
+            Toggle("Receive phone clipboard", isOn: clipboardBinding(.receive))
+            Button("Send clipboard now") {
+                (device.plugins["clipboard"] as? ClipboardPlugin)?.sendCurrentClipboard()
+            }
+            .disabled(device.connectionState != .paired)
+            Text("On Android 10 or later, use “Send clipboard” on the phone if background clipboard access is unavailable.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+    }
+
+    private func clipboardBinding(_ direction: Config.ClipboardDirection) -> Binding<Bool> {
+        Binding(
+            get: { config.clipboardEnabled(direction, for: device.id) },
+            set: { config.setClipboardEnabled($0, direction, for: device.id) }
+        )
+    }
+}
+
+private struct NotificationAppsSettings: View {
+    @ObservedObject var device: Device
+    @ObservedObject private var config = Config.shared
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let apps = config.notificationApps(for: device.id)
+        let packages = apps.keys.sorted {
+            let comparison = (apps[$0] ?? $0).localizedStandardCompare(apps[$1] ?? $1)
+            return comparison == .orderedSame ? $0 < $1 : comparison == .orderedAscending
+        }
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Notification apps — \(device.name)").font(.headline)
+            Text("Choose which apps can show notifications on this Mac. Apps appear here once they send a notification.")
+            Text("To stop an app before it sends anything, change the notification plugin settings in KDE Connect on Android. macOS does not let Apfelbindung forward notifications from other Mac apps.")
+            if packages.isEmpty {
+                Text("No apps seen yet.").foregroundStyle(.secondary)
+                    .frame(maxHeight: .infinity)
+            } else {
+                List(packages, id: \.self) { package in
+                    Toggle(isOn: Binding(
+                        get: { config.receivesNotifications(from: package, for: device.id) },
+                        set: { enabled in
+                            config.setReceivesNotifications(enabled, from: package, for: device.id)
+                            if enabled {
+                                (device.plugins["notification"] as? NotificationPlugin)?.requestNotifications()
+                            } else {
+                                NotificationStore.shared.hideNotifications(for: device.id, packageName: package)
+                            }
+                        }
+                    )) {
+                        VStack(alignment: .leading) {
+                            Text(apps[package] ?? package)
+                            if !package.hasPrefix("app:") {
+                                Text(package).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding()
+        .frame(width: 450, height: 360)
     }
 }
 

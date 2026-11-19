@@ -1072,6 +1072,7 @@ class DeviceManager: ObservableObject {
         let unpairPacket = NetworkPacket.pairPacket(pair: false)
         device.send(unpairPacket)
         Config.shared.removePairedDevice(id: deviceId)
+        NotificationStore.shared.hideNotifications(for: deviceId)
         pendingPairRequests.remove(deviceId)
         recentlyPairedDevices.removeValue(forKey: deviceId)
         pairTimestamps.removeValue(forKey: deviceId)
@@ -1172,6 +1173,7 @@ class DeviceManager: ObservableObject {
                     return
                 }
                 Config.shared.removePairedDevice(id: deviceId)
+                NotificationStore.shared.hideNotifications(for: deviceId)
                 self.updateDeviceState(device, to: .discovered)
                 device.plugins.removeAll()
                 recentlyPairedDevices.removeValue(forKey: deviceId)
@@ -1244,32 +1246,46 @@ class DeviceManager: ObservableObject {
 
     // MARK: - Plugins
 
-    private func initializePlugins(for device: Device) {
+    private func initializePlugins(for device: Device, reset: Bool = true) {
         let enabled = Config.shared.enabledPlugins(for: device.id)
-        device.plugins.removeAll()
-
-        if enabled.contains("ping") { device.plugins["ping"] = PingPlugin(device: device) }
-        if enabled.contains("battery") { device.plugins["battery"] = BatteryPlugin(device: device) }
-        if enabled.contains("notification") { device.plugins["notification"] = NotificationPlugin(device: device) }
-        if enabled.contains("telephony") { device.plugins["telephony"] = TelephonyPlugin(device: device) }
-        if enabled.contains("clipboard") {
-            let clipPlugin = ClipboardPlugin(device: device)
-            clipPlugin.start()
-            device.plugins["clipboard"] = clipPlugin
+        if reset || !enabled.contains("clipboard") {
+            (device.plugins["clipboard"] as? ClipboardPlugin)?.stop()
         }
-        if enabled.contains("findmyphone") { device.plugins["findmyphone"] = FindMyPhonePlugin(device: device) }
-        if enabled.contains("share") { device.plugins["share"] = SharePlugin(device: device) }
-        if enabled.contains("sms") { device.plugins["sms"] = SMSPlugin(device: device) }
+        if reset {
+            device.plugins.removeAll()
+        } else {
+            device.plugins = device.plugins.filter { enabled.contains($0.key) }
+        }
 
-        // Request all notifications
-        let notifRequest = NetworkPacket(type: "kdeconnect.notification.request", body: ["request": AnyCodable(true)])
-        device.send(notifRequest)
+        if enabled.contains("ping"), device.plugins["ping"] == nil { device.plugins["ping"] = PingPlugin(device: device) }
+        if enabled.contains("battery"), device.plugins["battery"] == nil { device.plugins["battery"] = BatteryPlugin(device: device) }
+        if enabled.contains("notification"), device.plugins["notification"] == nil {
+            let plugin = NotificationPlugin(device: device)
+            device.plugins["notification"] = plugin
+            plugin.requestNotifications()
+        }
+        if enabled.contains("telephony"), device.plugins["telephony"] == nil { device.plugins["telephony"] = TelephonyPlugin(device: device) }
+        if enabled.contains("clipboard"), device.plugins["clipboard"] == nil {
+            let clipPlugin = ClipboardPlugin(device: device)
+            device.plugins["clipboard"] = clipPlugin
+            clipPlugin.start()
+        }
+        if enabled.contains("findmyphone"), device.plugins["findmyphone"] == nil { device.plugins["findmyphone"] = FindMyPhonePlugin(device: device) }
+        if enabled.contains("share"), device.plugins["share"] == nil { device.plugins["share"] = SharePlugin(device: device) }
+        if enabled.contains("sms"), device.plugins["sms"] == nil {
+            let plugin = SMSPlugin(device: device)
+            device.plugins["sms"] = plugin
+            if !reset { plugin.onDeviceReady() }
+        }
     }
 
     /// Call this when plugin toggles change so plugins are reloaded at runtime
     func reloadPlugins(for deviceId: String) {
-        guard let device = devices[deviceId] else { return }
-        initializePlugins(for: device)
+        if !Config.shared.enabledPlugins(for: deviceId).contains("notification") {
+            NotificationStore.shared.hideNotifications(for: deviceId)
+        }
+        guard let device = devices[deviceId], device.connectionState == .paired else { return }
+        initializePlugins(for: device, reset: false)
         KLog.log("[DeviceManager] Reloaded plugins for \(device.name)")
     }
 

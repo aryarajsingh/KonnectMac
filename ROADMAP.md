@@ -15,14 +15,14 @@ Effort: **S** ≈ 1 day · **M** ≈ 2–5 days · **L** ≈ 1–2 weeks · **XL
 
 ## 1. Feature parity
 
-**Score: 8 of 25 areas working, 3 of them partial. 16 pending, 1 not applicable.**
+**Score: 8 of 25 areas working, 2 of them partial. 16 pending, 1 not applicable.**
 
 | # | Area | KDE Connect plugin / packet types | Status | Effort | macOS approach & notes |
 |---|------|-----------------------------------|--------|--------|------------------------|
 | 1 | Ping | `ping` · `kdeconnect.ping` | ✅ | — | — |
 | 2 | Battery | `battery` · `kdeconnect.battery`, `.battery.request` | ✅ | — | — |
-| 3 | Clipboard (text) | `clipboard` · `kdeconnect.clipboard`, `.clipboard.connect` | ✅ | — | Text only today |
-| 4 | Notifications | `notifications` · `kdeconnect.notification`, `.notification.request`, `.notification.reply`, `.notification.action` | 🚧 | S | Mirroring + inline reply work; **notification action buttons are advertised but not sent**, so rich actions from the phone do nothing |
+| 3 | Clipboard | `clipboard` · `kdeconnect.clipboard`, `.clipboard.connect`, `.clipboard.file` | 🚧 | M | Text sync and direction controls work; files and images are not supported |
+| 4 | Notifications | `notifications` · `kdeconnect.notification`, `.notification.request`, `.notification.reply`, `.notification.action` | ✅ | — | Mirroring, inline reply, per-app receive filters and phone actions from the app's notification views |
 | 5 | Telephony | `telephony` · `kdeconnect.telephony`, `.request_mute` | ✅ | — | Includes pause/resume via MediaRemote |
 | 6 | SMS | `sms` · `kdeconnect.sms.request_conversations`, `.request_conversation`, `.request`, `.messages`, `.attachment_file`, `.request_attachment` | 🚧 | M | Conversations and sending work; **MMS attachments (`attachment_file` / `request_attachment` payloads) are not handled** |
 | 7 | File transfer | `share` · `kdeconnect.share.request`, `.share.request.update` | ✅ | — | — |
@@ -48,7 +48,6 @@ Effort: **S** ≈ 1 day · **M** ≈ 2–5 days · **L** ≈ 1–2 weeks · **XL
 ### Nice-to-have extras inside existing plugins
 
 - **Clipboard files** (`kdeconnect.clipboard.file`): copy/paste images and files across devices.
-- **Notification actions**: render the `actions[]` array and send `kdeconnect.notification.action` with the right `action` key.
 - **SMS read state / delivery**: mark threads read, surface send failures.
 - **Transfer robustness**: cancellation, progress, resumed transfers and large files for share/SMS.
 - **Per-device plugin state**: verify toggles and plugin instances do not leak between devices.
@@ -67,7 +66,7 @@ Effort: **S** ≈ 1 day · **M** ≈ 2–5 days · **L** ≈ 1–2 weeks · **XL
 | UDP discovery port | ✅ | Listens/announces on 1716, no periodic churn while paired |
 | **v8 pre-TLS connection packet** | ⏳ | `targetDeviceId` + `targetProtocolVersion` written as a JSON line before the TLS handshake. Android tolerates its absence; **the KDE Connect desktop validates it** (`isValidConnectionPacket` in `lanlinkprovider.cpp`). Needed to pair with Linux desktops reliably |
 | Multi-device | 🚧 | `DeviceManager` tracks several devices, but the UI assumes a single paired device (`pairedDevices.first` in several views) and plugin/settings state is not fully per-device |
-| Capability accuracy | 🚧 | `kdeconnect.notification.action` is advertised without being implemented; advertise only what is wired, or implement it |
+| Capability accuracy | 🚧 | Notification request and action capabilities match the implemented packet directions; audit the remaining plugins |
 | Pairing edge cases | 🚧 | Issue #3 (handshake stall) should be re-tested on a real phone with v8 before closing it |
 | Security hardening | ⏳ | Certificate pinning exists; add explicit tests for unpair/repair and replayed pair packets |
 
@@ -107,7 +106,7 @@ Effort: **S** ≈ 1 day · **M** ≈ 2–5 days · **L** ≈ 1–2 weeks · **XL
 
 | Milestone | Contents |
 |-----------|----------|
-| **v3.1 — Quick wins** | Notification actions, SMS attachments, clipboard files, connectivity report, find this device, lock device, screensaver inhibit, capability-accuracy fix |
+| **v3.1 — Quick wins** | SMS attachments, clipboard files, connectivity report, find this device, lock device, screensaver inhibit, capability audit |
 | **v3.2 — Audio & media** | System volume, remote system volume, media control (MPRIS), now-playing UI |
 | **v3.3 — Remote input** | Mousepad + remote keyboard + presenter, Accessibility onboarding |
 | **v4.0 — Full parity** | Run commands, contacts, media remote, v8 pre-TLS connection packet, multi-device UI, clipboard files |
