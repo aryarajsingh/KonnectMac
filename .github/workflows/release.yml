@@ -16,7 +16,7 @@ concurrency:
 jobs:
   package:
     name: Build .pkg and publish release
-    runs-on: macos-lastest
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,3 +72,20 @@ jobs:
             --title "Apfelbindung $TAG" \
             --generate-notes \
             $PRERELEASE
+
+      - name: Add unsigned-build notice
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          BODY=$(gh release view "$TAG" --json body --jq .body)
+          {
+            echo "> **Unsigned build:** this release is ad-hoc signed and not notarized."
+            echo "> macOS Gatekeeper will warn on first launch. Follow the install steps in"
+            echo "> [Installing an unsigned build](https://github.com/${{ github.repository }}/blob/$TAG/docs/unsigned-install.md)."
+            echo
+            printf '%s\n' "$BODY"
+          } > "$RUNNER_TEMP/release-notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

@@ -7,8 +7,12 @@ CONFIG="Release"
 APP_NAME="Apfelbindung"
 BUILD_ARCHS="${BUILD_ARCHS:-x86_64 arm64}"
 
-VERSION="${MARKETING_VERSION_OVERRIDE:-$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" -showBuildSettings 2>/dev/null \
-    | grep -m1 'MARKETING_VERSION' | awk '{print $3}') }"
+if [ -n "${MARKETING_VERSION_OVERRIDE:-}" ]; then
+    VERSION="$MARKETING_VERSION_OVERRIDE"
+else
+    VERSION=$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" -showBuildSettings 2>/dev/null \
+        | grep -m1 'MARKETING_VERSION' | awk '{print $3}')
+fi
 BUILD_NUM=$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" -showBuildSettings 2>/dev/null \
     | grep -m1 'CURRENT_PROJECT_VERSION' | awk '{print $3}')
 
@@ -25,7 +29,7 @@ xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" clean 
     VALID_ARCHS="$BUILD_ARCHS" \
     ONLY_ACTIVE_ARCH=NO \
     MARKETING_VERSION="$VERSION" \
-    BUILD_NUMBER="$BUILD_NUM"
+    CURRENT_PROJECT_VERSION="$BUILD_NUM"
 
 BUILT=$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" -showBuildSettings 2>/dev/null \
     | grep -m1 'BUILT_PRODUCTS_DIR' | awk '{print $3}')

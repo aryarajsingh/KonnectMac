@@ -96,8 +96,9 @@ APIs, permissions and effort estimates — plus the checklist to ship the app pr
 
 📦 **[Latest release](https://github.com/rockmadehome/Apfelbindung/releases/latest)** (`.pkg` installer)
 
-> **Note:** the app is neither signed nor notarized, so macOS may show an "unidentified
-> developer" warning. Right-click the app → **Open** to bypass it.
+> **Unsigned build:** the app is ad-hoc signed and not notarized, so macOS Gatekeeper will
+> warn on first launch. See **[Installing an unsigned build](docs/unsigned-install.md)** for
+> the exact steps, including how to verify the SHA256 checksum.
 
 ## Setup
 
@@ -199,8 +200,8 @@ cp -R "$BUILT/Apfelbindung.app" /Applications/
 open /Applications/Apfelbindung.app
 ```
 
-> **Note:** macOS may warn about an unidentified developer on first launch. Right-click the
-> app → **Open**.
+> **Note:** the generated package is unsigned. See
+> **[Installing an unsigned build](docs/unsigned-install.md)** for the Gatekeeper steps.
 
 ### Create a `.pkg` installer
 
@@ -212,7 +213,7 @@ This builds the app in Release mode and generates `Apfelbindung-<version>.pkg` i
 root. Double-click to install, or from the command line:
 
 ```bash
-sudo installer -pkg Apfelbindung-3.0.pkg -target /
+sudo installer -pkg Apfelbindung-3.0.1.pkg -target /
 ```
 
 ## Releases with GitHub Actions
@@ -220,21 +221,22 @@ sudo installer -pkg Apfelbindung-3.0.pkg -target /
 The repository ships [`.github/workflows/release.yml`](.github/workflows/release.yml), which
 builds and publishes an installer without a local Mac:
 
-1. **Automatic:** pushing a `v*` tag (for example `v3.0`) builds the app on a macOS runner,
+1. **Automatic:** pushing a `v*` tag (for example `v3.0.1`) builds the app on a macOS runner,
    generates the `.pkg`, and creates a GitHub Release with the package and its SHA256
    checksum attached.
 2. **Manual:** from *Actions → Release → Run workflow* you can build and download the `.pkg`
    as an artifact without publishing anything.
 
 ```bash
-git tag v3.0
-git push origin v3.0
+git tag v3.0.1
+git push origin v3.0.1
 ```
 
-The version comes from the tag (`v3.0` → `3.0`) and is injected into the Xcode build, so the
-package name and the version shown in the app stay in sync with the release. The `.pkg` is
-unsigned: removing the Gatekeeper warning requires an Apple Developer certificate and
-notarization.
+The version comes from the tag (`v3.0.1` → `3.0.1`) and is injected into the Xcode build, so
+the package name and the version shown in the app stay in sync with the release. The `.pkg`
+is unsigned: removing the Gatekeeper warning requires an Apple Developer certificate and
+notarization. Until then, follow
+**[Installing an unsigned build](docs/unsigned-install.md)**.
 
 <details>
 <summary><strong>Architecture</strong></summary>
