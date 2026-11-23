@@ -133,7 +133,9 @@ class DeviceManager: ObservableObject {
 
         let deviceName = packet.body["deviceName"]?.value as? String ?? "Unknown"
         let deviceType = packet.body["deviceType"]?.value as? String ?? "phone"
-        let tcpPort = packet.body["tcpPort"]?.value as? Int ?? Int(Config.minPort)
+        // AnyCodable decodes JSON integers as Int64, and `as? Int` fails on a boxed Int64,
+        // so read the port through asPort(). Fall back to the protocol's default port.
+        let tcpPort = Int(packet.body["tcpPort"]?.asPort() ?? Config.defaultPort)
 
         // Check if already connected or being connected.
         // Don't require conn.running — an incoming connection may not be running yet
