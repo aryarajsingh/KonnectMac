@@ -2,6 +2,18 @@ import Foundation
 import os
 import Security
 
+/// Why a connection attempt ended. `DeviceManager` uses this to decide whether a
+/// reconnect failure may escalate the TLS backoff (finding A2). Read before cleanup
+/// resets `tlsEstablished`, which used to make every disconnect look like a TLS failure.
+enum KDEConnectionEndReason: Equatable {
+    /// TCP connect refused/timed out/unreachable — a transport problem, not a handshake problem.
+    case transportFailure
+    /// TLS setup or handshake failed (certificate, protocol, dozing peer mid-handshake).
+    case tlsFailure
+    /// The connection was established and then closed, or was closed locally.
+    case closed
+}
+
 class KDEConnection {
     private var _fd: Int32 = -1
     let host: String
@@ -11,6 +23,7 @@ class KDEConnection {
     private var _running = false
     private var _tlsEstablished = false
     private var _lastPacketTime = Date()
+    private var _endReason: KDEConnectionEndReason?
     // Lock ordering: pendingWriteLock -> stateLock (never acquire stateLock then pendingWriteLock)
     private let stateLock = OSAllocatedUnfairLock(initialState: ())
     private var sslContext: SSLContext?
@@ -34,6 +47,17 @@ class KDEConnection {
         get { stateLock.withLock { _lastPacketTime } }
         set { stateLock.withLock { _lastPacketTime = newValue } }
     }
+
+    /// Set by the connection queue before `onDisconnected` fires. `nil` means the
+    /// attempt never reached a classified failure (e.g. torn down before dial).
+    var endReason: KDEConnectionEndReason? {
+        stateLock.withLock { _endReason }
+    }
+
+    private func setEndReason(_ reason: KDEConnectionEndReason) {
+        stateLock.withLock { _endReason = reason }
+    }
+
     private var sslFdPtr: UnsafeMutablePointer<Int32>?
     private var readBuffer = Data()
     private var pendingWriteData = Data()
@@ -111,6 +135,7 @@ class KDEConnection {
             addr.sin_port = self.port.bigEndian
             guard inet_pton(AF_INET, self.host, &addr.sin_addr) == 1 else {
                 KLog.log("[KDEConn] Invalid IP: \(self.host)")
+                self.setEndReason(.transportFailure)
                 Darwin.close(self._fd)
                 self._fd = -1
                 return
@@ -129,6 +154,7 @@ class KDEConnection {
             if connectResult != 0 {
                 guard errno == EINPROGRESS else {
                     KLog.log("[KDEConn] Connect to \(self.host):\(self.port) failed: \(String(cString: strerror(errno)))")
+                    self.setEndReason(.transportFailure)
                     Darwin.close(self._fd)
                     self._fd = -1
                     DispatchQueue.main.async { [weak self] in
@@ -142,6 +168,7 @@ class KDEConnection {
                 let pollResult = poll(&pfd, 1, 10_000)
                 guard pollResult > 0 else {
                     KLog.log("[KDEConn] Connect to \(self.host):\(self.port) timed out after 10s")
+                    self.setEndReason(.transportFailure)
                     Darwin.close(self._fd)
                     self._fd = -1
                     DispatchQueue.main.async { [weak self] in
@@ -155,6 +182,7 @@ class KDEConnection {
                 getsockopt(self._fd, SOL_SOCKET, SO_ERROR, &soError, &soErrorLen)
                 guard soError == 0 else {
                     KLog.log("[KDEConn] Connect to \(self.host):\(self.port) failed: \(String(cString: strerror(soError)))")
+                    self.setEndReason(.transportFailure)
                     Darwin.close(self._fd)
                     self._fd = -1
                     DispatchQueue.main.async { [weak self] in
@@ -168,7 +196,7 @@ class KDEConnection {
             // SO_SNDTIMEO semantics, not on O_NONBLOCK.
             _ = fcntl(self._fd, F_SETFL, originalFlags)
 
-            self.enableKeepAlive()
+            self.enableKeepAlive(for: self.host)
             self._running = true
             self.connectionLoop()
         }
@@ -177,26 +205,27 @@ class KDEConnection {
     func startIncoming() {
         queue.async { [weak self] in
             guard let self = self else { return }
-            self.enableKeepAlive()
+            self.enableKeepAlive(for: self.host)
             self._running = true
             self.connectionLoop()
         }
     }
 
-    private func enableKeepAlive() {
+    private func enableKeepAlive(for host: String) {
         var nosigpipe: Int32 = 1
         setsockopt(_fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
         var keepAlive: Int32 = 1
         setsockopt(_fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
-        // Upstream keepalive profile (kdeconnect-kde): idle 60s before the first probe.
-        // The old 10/5/3 profile (~25s to detect a dead peer) also woke the phone every
-        // few seconds while it was in Doze — Android's own desktop profile uses 60s idle
-        // precisely to avoid nudging a dozing device, at the cost of slower detection.
-        var keepIdle: Int32 = 60
+        // Profile depends on the route (finding A7): LAN uses 30/10/3 (~60s to notice a
+        // phone that vanished without a FIN, inside the 75s failover budget); Tailscale
+        // keeps the upstream kdeconnect-kde 60/15/4 so a dozing phone is not woken
+        // every few seconds.
+        let profile = KeepAliveProfile.forHost(host)
+        var keepIdle = profile.idle
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepIdle, socklen_t(MemoryLayout<Int32>.size))
-        var keepIntvl: Int32 = 15
+        var keepIntvl = profile.interval
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepIntvl, socklen_t(MemoryLayout<Int32>.size))
-        var keepCnt: Int32 = 4
+        var keepCnt = profile.count
         setsockopt(_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepCnt, socklen_t(MemoryLayout<Int32>.size))
     }
 
@@ -236,6 +265,7 @@ class KDEConnection {
 
         guard setupTLS(isServer: isTLSServer) else {
             KLog.log("[KDEConn] TLS setup failed for \(host)")
+            self.setEndReason(.tlsFailure)
             cleanupSSL()
             disconnect()
             return
@@ -283,6 +313,7 @@ class KDEConnection {
 
         guard handshakeResult == errSecSuccess else {
             KLog.log("[KDEConn] TLS handshake failed: \(handshakeResult) for \(host) after \(attempts) attempts (isTLSServer=\(isTLSServer))")
+            self.setEndReason(.tlsFailure)
             cleanupSSL()
             let failedFd = _fd
             _fd = -1
@@ -362,6 +393,7 @@ class KDEConnection {
         }
 
         _running = false
+        setEndReason(.closed)
         KLog.log("[KDEConn] Connection loop exited for \(host) (fd=\(_fd)) — cleaning up SSL")
         // SSLClose must happen BEFORE fd close so TLS close_notify is sent on valid socket
         cleanupSSL()

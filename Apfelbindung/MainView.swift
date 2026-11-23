@@ -703,12 +703,30 @@ private struct DirectConnectSection: View {
     @ObservedObject var config = Config.shared
     @ObservedObject var manager = DeviceManager.shared
     @State private var connectIP = ""
-    @State private var connectState: ConnectState = .idle
     @State private var rememberIP = false
-    @State private var connectingToIP = ""
 
     private enum ConnectState: Equatable {
         case idle, connecting, connected(String), failed
+    }
+
+    private var trimmedIP: String {
+        connectIP.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Real state published by DeviceManager (A6). No timer: Connecting ends when the
+    /// attempt connects or fails, not 10 seconds after the click.
+    private var connectState: ConnectState {
+        guard !trimmedIP.isEmpty else { return .idle }
+        switch manager.directConnectStatus {
+        case .connecting(let host) where host == trimmedIP:
+            return .connecting
+        case .connected(let host, let name) where host == trimmedIP:
+            return .connected(name)
+        case .failed(let host) where host == trimmedIP:
+            return .failed
+        default:
+            return .idle
+        }
     }
 
     var body: some View {
@@ -728,7 +746,7 @@ private struct DirectConnectSection: View {
                 case .idle, .failed:
                     Button("Connect") { connectNow() }
                         .controlSize(.small)
-                        .disabled(connectIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(trimmedIP.isEmpty)
                 case .connecting:
                     HStack(spacing: 4) {
                         ProgressView().controlSize(.small).scaleEffect(0.7)
@@ -745,7 +763,7 @@ private struct DirectConnectSection: View {
             }
 
             if connectState == .failed {
-                Text("Could not reach \(connectingToIP). Check the IP and ensure KDE Connect is running.")
+                Text("Could not reach \(trimmedIP). Check the IP and ensure KDE Connect is running.")
                     .font(.system(size: 10)).foregroundColor(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -765,13 +783,9 @@ private struct DirectConnectSection: View {
     }
 
     private func connectNow() {
-        let trimmed = connectIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = trimmedIP
         guard !trimmed.isEmpty else { return }
-        connectIP = trimmed; connectingToIP = trimmed; connectState = .connecting
         manager.connectToDirectIP(trimmed)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-            if connectState == .connecting { connectState = .failed }
-        }
     }
 }
 

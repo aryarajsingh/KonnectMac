@@ -101,10 +101,27 @@ struct DevicesTab: View {
     @ObservedObject var config = Config.shared
     @ObservedObject var manager = DeviceManager.shared
     @State private var connectIP = ""
-    @State private var connectState: ConnectState = .idle
     @State private var rememberIP = false
     @State private var rememberStatus = ""
-    @State private var connectingToIP = ""
+
+    private var trimmedIP: String {
+        connectIP.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Real state published by DeviceManager (A6) — no 10s timer, no manual polling.
+    private var connectState: ConnectState {
+        guard !trimmedIP.isEmpty else { return .idle }
+        switch manager.directConnectStatus {
+        case .connecting(let host) where host == trimmedIP:
+            return .connecting
+        case .connected(let host, let name) where host == trimmedIP:
+            return .connected(name)
+        case .failed(let host) where host == trimmedIP:
+            return .failed
+        default:
+            return .idle
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -150,7 +167,7 @@ struct DevicesTab: View {
                     }
 
                     if connectState == .failed {
-                        Text("Could not reach \(connectingToIP). Check the IP and ensure KDE Connect is running on the phone.")
+                        Text("Could not reach \(trimmedIP). Check the IP and ensure KDE Connect is running on the phone.")
                             .font(.system(size: 10))
                             .foregroundColor(.red)
                             .fixedSize(horizontal: false, vertical: true)
@@ -178,10 +195,6 @@ struct DevicesTab: View {
                                 rememberIP = false
                                 config.tailscaleIP = ""
                             }
-                            // Reset state when IP changes
-                            if connectState == .failed || connectState != .connecting {
-                                connectState = .idle
-                            }
                         }
 
                     if !rememberStatus.isEmpty {
@@ -191,19 +204,6 @@ struct DevicesTab: View {
                     }
                 }
                 .padding(6)
-            }
-            .onReceive(manager.objectWillChange) { _ in
-                // Watch for a device that connected via the IP we're trying
-                guard connectState == .connecting, !connectingToIP.isEmpty else { return }
-                DispatchQueue.main.async {
-                    for device in manager.devices.values {
-                        guard device.connectionState == .discovered || device.connectionState == .paired else { continue }
-                        if let conn = manager.connections[device.id], conn.host == connectingToIP, conn.running {
-                            connectState = .connected(device.name)
-                            return
-                        }
-                    }
-                }
             }
 
             GroupBox("Paired Devices") {
@@ -251,34 +251,13 @@ struct DevicesTab: View {
                 connectIP = config.tailscaleIP
                 rememberIP = true
             }
-            // If already connected to the saved IP, show connected state
-            if !connectIP.isEmpty {
-                let trimmed = connectIP.trimmingCharacters(in: .whitespacesAndNewlines)
-                for device in manager.devices.values {
-                    if let conn = manager.connections[device.id], conn.host == trimmed, conn.running,
-                       device.connectionState == .discovered || device.connectionState == .paired {
-                        connectState = .connected(device.name)
-                        break
-                    }
-                }
-            }
         }
     }
 
     private func connectNow() {
-        let trimmed = connectIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = trimmedIP
         guard !trimmed.isEmpty else { return }
-        connectIP = trimmed
-        connectingToIP = trimmed
-        connectState = .connecting
         manager.connectToDirectIP(trimmed)
-
-        // Timeout after 10s — if still connecting, show failure
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-            if connectState == .connecting {
-                connectState = .failed
-            }
-        }
     }
 }
 

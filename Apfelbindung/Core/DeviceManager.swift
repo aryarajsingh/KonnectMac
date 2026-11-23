@@ -21,7 +21,14 @@ class DeviceManager: ObservableObject {
     private var lastPairRequestTime: [String: Date] = [:] // deviceId -> when we last sent pair request
     private var lastReconnectAttemptTime: [String: Date] = [:] // deviceId -> last outbound reconnect attempt
     private var lastHeartbeatSent: [String: Date] = [:] // deviceId -> last heartbeat sent
-    private var consecutiveTLSFailures: [String: Int] = [:] // deviceId -> count of consecutive TLS failures
+    /// Per-device reconnect backoff. Only real TLS failures escalate it (finding A2).
+    private var reconnectPolicies: [String: ReconnectPolicy] = [:]
+
+    /// In-flight "Connect by IP" attempts. A stale timeout or callback must never touch
+    /// a newer attempt (finding A1), and the published `directConnectStatus` drives the
+    /// settings panels instead of a 10s timer (finding A6).
+    private let directConnectTracker = DirectConnectTracker()
+    @Published private(set) var directConnectStatus: DirectConnectStatus = .idle
 
     private let udpDiscovery = UDPDiscovery()
     private let tcpServer = LanServer()
@@ -88,7 +95,7 @@ class DeviceManager: ObservableObject {
                     if path.status == .satisfied {
                         // A recovered/new network invalidates prior handshake failures,
                         // so drop the accumulated backoff before retrying.
-                        self.consecutiveTLSFailures.removeAll()
+                        self.reconnectPolicies.removeAll()
                         self.broadcastIdentity()
                         if !self.inWakeRecoveryWindow {
                             self.reconnectPairedDevices()
@@ -199,17 +206,41 @@ class DeviceManager: ObservableObject {
         udpDiscovery.broadcast(packet: identity)
 
         // Direct connect to Tailscale/VPN IP — only for non-LAN IPs (100.x.x.x etc.)
-        // Skip if the phone is already connected (via WiFi/LAN) to avoid duplicate
-        // connections that waste resources and get dropped.
+        // Decide with a live session, not with the UI's `.paired` flag (finding A3):
+        // `.paired` is derived from the stored certificate and can stay stuck with no
+        // socket, which used to stop every tailnet dial.
         let tailscaleIP = Config.shared.tailscaleIP
         if !tailscaleIP.isEmpty && tailscaleIP.hasPrefix("100.") {
-            let phoneConnected = devices.values.contains {
-                $0.type == "phone" && $0.connectionState == .paired
-            }
-            if !phoneConnected {
-                connectDirectToHost(host: tailscaleIP, port: Config.defaultPort)
+            if !hasLivePairedPhoneConnection {
+                connectDirectToHost(
+                    host: tailscaleIP,
+                    port: directConnectTargetPort(for: tailscaleIP),
+                    announcesFailure: false
+                )
             }
         }
+    }
+
+    /// True while a paired phone has a live, TLS-established connection on any route.
+    private var hasLivePairedPhoneConnection: Bool {
+        connections.values.contains { conn in
+            guard conn.running, conn.tlsEstablished, let deviceId = conn.remoteDeviceId else { return false }
+            guard let device = devices[deviceId] else { return false }
+            return device.type == "phone" && Config.shared.isPaired(deviceId: deviceId)
+        }
+    }
+
+    /// TCP port for direct dials: the port learned from discovery when the paired phone
+    /// is known (finding A4), otherwise the KDE Connect default. When several phones are
+    /// paired, prefer the one whose saved IP matches the host we are dialing.
+    private func directConnectTargetPort(for host: String? = nil) -> UInt16 {
+        let pairedPhones = devices.values.filter {
+            Config.shared.isPaired(deviceId: $0.id) && $0.type == "phone"
+        }
+        let device = host.flatMap { host in
+            pairedPhones.first { Config.shared.savedDeviceIP(for: $0.id) == host }
+        } ?? (pairedPhones.count == 1 ? pairedPhones.first : nil)
+        return DirectConnectPort.resolve(learnedPort: device?.tcpPort ?? 0)
     }
 
     /// Actively reconnect to paired devices using their last known IP.
@@ -227,11 +258,11 @@ class DeviceManager: ObservableObject {
             // Throttle reconnect attempts with exponential backoff on TLS failures.
             // After wake, multiple triggers can overlap (wake task, path monitor,
             // broadcast timer). Consecutive TLS failures (phone locked/Dozing) use
-            // increasing intervals: 20s, 40s, 80s, 160s, up to 300s max.
-            let failures = consecutiveTLSFailures[device.id] ?? 0
-            let minInterval: TimeInterval = failures == 0 ? 20 : min(20 * pow(2.0, Double(failures - 1)), 300)
+            // increasing intervals: 20s, 40s, 80s, 160s, up to 300s max. Transport
+            // failures (Tailscale down, TCP timeout) don't escalate (finding A2).
+            let policy = reconnectPolicies[device.id] ?? ReconnectPolicy()
             if let lastAttempt = lastReconnectAttemptTime[device.id],
-               Date().timeIntervalSince(lastAttempt) < minInterval {
+               Date().timeIntervalSince(lastAttempt) < policy.interval {
                 continue
             }
 
@@ -241,7 +272,7 @@ class DeviceManager: ObservableObject {
                 // Use the TCP port learned from discovery when available — a phone whose
                 // TCP stack moved it off 1716 (e.g. 1716 busy on a previous crash) is
                 // undialable if we always assume the default port.
-                let port = device.tcpPort >= Config.minPort ? device.tcpPort : Config.defaultPort
+                let port = DirectConnectPort.resolve(learnedPort: device.tcpPort)
                 KLog.log("[DeviceManager] Reconnecting to \(device.name) at \(ip):\(port)")
                 // Reconnect via device-bound outgoing flow so remoteDeviceId is known
                 // before early post-TLS packets arrive.
@@ -252,12 +283,13 @@ class DeviceManager: ObservableObject {
 
     // MARK: - Connection Health
 
-    // No app-level health check and no health timer. TCP keepalive
-    // (idle=60s, interval=15s, count=4) detects dead peers; an app-level
-    // isSocketAlive() poll adds nothing (getsockopt(SO_ERROR) can't see
-    // half-open connections) and idle-timeout disconnects cause spurious
-    // reconnects when the phone is locked/Dozing. KDE Connect desktop ships
-    // without one either.
+    // No app-level health check and no health timer. TCP keepalive detects dead peers;
+    // the profile is chosen per route in KDEConnection.enableKeepAlive(for:) (finding A7):
+    // 30/10/3 for LAN (~60s detection, inside the 75s failover budget) and 60/15/4 for
+    // Tailscale, so a dozing phone is not woken every few seconds. An app-level
+    // isSocketAlive() poll adds nothing (getsockopt(SO_ERROR) can't see half-open
+    // connections) and idle-timeout disconnects cause spurious reconnects when the
+    // phone is locked/Dozing. KDE Connect desktop ships without one either.
 
     // MARK: - UDP Discovery Handler
 
@@ -524,13 +556,24 @@ class DeviceManager: ObservableObject {
     /// Connect directly to a host by IP — creates a full KDEConnection with TLS handshake.
     /// Used for Tailscale/VPN where UDP broadcast doesn't work.
     /// Unlike the old fire-and-close approach, this keeps the socket open for the full protocol.
-    private func connectDirectToHost(host: String, port: UInt16) {
+    private func connectDirectToHost(host: String, port: UInt16, announcesFailure: Bool = true) {
         // Already have a running connection to this host? Skip.
         for (_, conn) in connections {
             if conn.host == host && conn.running {
                 KLog.log("[DirectConnect] Skipped \(host) — already connected")
+                directConnectTracker.noteConnected(
+                    host: host,
+                    deviceName: conn.remoteDeviceId.flatMap { devices[$0]?.name } ?? host
+                )
+                syncDirectConnectStatus()
                 return
             }
+        }
+
+        // A newer dial to the same host supersedes an older attempt; don't stack sockets.
+        if directConnectTracker.isConnecting(host: host) {
+            KLog.log("[DirectConnect] Skipped \(host) — attempt already in progress")
+            return
         }
 
         // Pre-assign deviceId for Tailscale/VPN connections where the phone won't
@@ -552,16 +595,13 @@ class DeviceManager: ObservableObject {
             preAssignedDeviceId = nil
         }
 
-        let tempKey = "direct_\(host)"
+        // Unique key per attempt (finding A1). The old `direct_<host>` key was reused,
+        // so an older attempt's timeout could remove/disconnect the newer one.
+        let attempt = directConnectTracker.begin(host: host, port: port, announcesFailure: announcesFailure)
+        let tempKey = attempt.key
+        syncDirectConnectStatus()
 
-        // Already connecting? Skip.
-        if connectingDeviceIds.contains(tempKey) {
-            KLog.log("[DirectConnect] Skipped \(host) — connect already in progress")
-            return
-        }
-        connectingDeviceIds.insert(tempKey)
-
-        KLog.log("[DirectConnect] Initiating full connection to \(host):\(port)")
+        KLog.log("[DirectConnect] Initiating full connection to \(host):\(port) (attempt \(attempt.id.uuidString.prefix(8)))")
 
         let conn = KDEConnection(host: host, port: port, isIncoming: false)
 
@@ -576,6 +616,11 @@ class DeviceManager: ObservableObject {
 
         conn.onIdentityReceived = { [weak self, weak conn] packet in
             guard let self = self, let conn = conn else { return }
+            guard self.directConnectTracker.isCurrent(attempt) else {
+                KLog.log("[DirectConnect] Ignoring identity on stale attempt to \(host)")
+                conn.disconnect()
+                return
+            }
             guard let deviceId = packet.body["deviceId"]?.value as? String else { return }
 
             let deviceName = packet.body["deviceName"]?.value as? String ?? "Unknown"
@@ -583,7 +628,7 @@ class DeviceManager: ObservableObject {
 
             conn.remoteDeviceId = deviceId
 
-            // Re-key from temp to real device ID
+            // Re-key from this attempt's key to the real device ID
             self.connections.removeValue(forKey: tempKey)
 
             // If we already have a running, finalized connection to this device, discard this one.
@@ -599,8 +644,10 @@ class DeviceManager: ObservableObject {
 
                     if existingReachable {
                         KLog.log("[DirectConnect] Already connected to \(deviceName) via \(existing.host), discarding")
+                        self.directConnectTracker.markConnected(attempt, deviceName: deviceName)
+                        self.directConnectTracker.finish(attempt)
+                        self.syncDirectConnectStatus()
                         conn.disconnect()
-                        self.connectingDeviceIds.remove(tempKey)
                         return
                     } else {
                         KLog.log("[DirectConnect] Existing connection to \(deviceName) via \(existing.host) is unreachable, replacing with \(host)")
@@ -622,25 +669,32 @@ class DeviceManager: ObservableObject {
 
             // If TLS is already established (identity arrived over TLS after handshake), finalize now
             if conn.tlsEstablished {
-                self.connectingDeviceIds.remove(tempKey)
+                self.directConnectTracker.markConnected(attempt, deviceName: deviceName)
+                self.syncDirectConnectStatus()
                 self.finalizeConnection(deviceId: deviceId, conn: conn)
             }
         }
 
         conn.onTLSReady = { [weak self, weak conn] in
             guard let self = self, let conn = conn else { return }
-            self.connectingDeviceIds.remove(tempKey)
+            guard self.directConnectTracker.isCurrent(attempt) else {
+                KLog.log("[DirectConnect] Ignoring TLS ready on stale attempt to \(host)")
+                conn.disconnect()
+                return
+            }
             guard let deviceId = conn.remoteDeviceId else {
                 // Normal for outgoing: identity arrives over TLS after handshake
                 // onIdentityReceived will call finalizeConnection when it arrives
                 return
             }
-            // Re-key from temp to deviceId if not already done
+            // Re-key from this attempt's key to deviceId if not already done
             if self.connections[tempKey] === conn {
                 self.connections.removeValue(forKey: tempKey)
                 self.connections[deviceId] = conn
                 KLog.log("[DirectConnect] Re-keyed \(tempKey) → \(deviceId) on TLS ready")
             }
+            self.directConnectTracker.markConnected(attempt, deviceName: self.devices[deviceId]?.name ?? deviceId)
+            self.syncDirectConnectStatus()
             self.finalizeConnection(deviceId: deviceId, conn: conn)
         }
 
@@ -651,22 +705,34 @@ class DeviceManager: ObservableObject {
 
         conn.onDisconnected = { [weak self, weak conn] in
             guard let self = self, let conn = conn else { return }
-            self.connectingDeviceIds.remove(tempKey)
+            // Only this attempt may report failure; a stale callback must not flip the
+            // UI while a newer attempt is handshaking (finding A1 + A6).
+            if self.directConnectTracker.markFailed(attempt) {
+                self.syncDirectConnectStatus()
+            }
             self.handleDisconnection(conn: conn)
         }
 
         conn.connectAndRun()
 
-        // Timeout: if identity hasn't arrived in 15 seconds, clean up orphan connection
+        // Timeout: if TLS/identity hasn't arrived in 15 seconds, clean up THIS attempt.
+        // The tracker refuses to act when a newer attempt superseded it (finding A1).
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self, weak conn] in
             guard let self = self else { return }
-            if self.connections[tempKey] != nil {
-                KLog.log("[DirectConnect] Connection to \(host) timed out waiting for identity, cleaning up")
-                conn?.disconnect()
-                self.connections.removeValue(forKey: tempKey)
-                self.connectingDeviceIds.remove(tempKey)
-            }
+            guard self.directConnectTracker.cleanupTimeout(attempt) == .disconnect else { return }
+            KLog.log("[DirectConnect] Connection to \(host) timed out waiting for identity, cleaning up")
+            conn?.disconnect()
+            self.connections.removeValue(forKey: tempKey)
+            self.syncDirectConnectStatus()
         }
+    }
+
+    private func syncDirectConnectStatus() {
+        let newStatus = directConnectTracker.status
+        guard newStatus != directConnectStatus else { return }
+        directConnectStatus = newStatus
+        // Observability for manual E2E: the panels are now driven by this value.
+        KLog.log("[DirectConnect] status → \(String(describing: newStatus))")
     }
 
     // MARK: - Connection Finalization
@@ -688,7 +754,8 @@ class DeviceManager: ObservableObject {
         tlsEstablishedDeviceIds.insert(deviceId)
         connectingDeviceIds.remove(deviceId)
         lastReconnectAttemptTime.removeValue(forKey: deviceId)
-        consecutiveTLSFailures.removeValue(forKey: deviceId)
+        // A finalized connection proves the device is reachable: clear the TLS backoff.
+        reconnectPolicies.removeValue(forKey: deviceId)
         connections[deviceId] = conn
 
         let device = getOrCreateDevice(id: deviceId, name: Config.shared.savedDeviceName(for: deviceId) ?? deviceId)
@@ -803,7 +870,7 @@ class DeviceManager: ObservableObject {
         // reached TLS (including deliberate replacements and the sleep teardown). If it
         // survives a wake/network change, reconnectPairedDevices can stay throttled for
         // up to 300s and the device looks permanently stuck.
-        consecutiveTLSFailures.removeAll()
+        reconnectPolicies.removeAll()
         for device in devices.values {
             if let clipPlugin = device.plugins["clipboard"] as? ClipboardPlugin {
                 clipPlugin.stop()
@@ -876,19 +943,31 @@ class DeviceManager: ObservableObject {
     private func handleDisconnection(conn: KDEConnection) {
         let deviceId = conn.remoteDeviceId
         let deviceName = deviceId.flatMap { devices[$0]?.name } ?? "unknown"
-        KLog.log("[Link] handleDisconnection called for \(deviceName) (deviceId=\(deviceId ?? "nil"), connRunning=\(conn.running), connFd=\(conn.fd))")
+        let reason = conn.endReason
+        KLog.log("[Link] handleDisconnection called for \(deviceName) (deviceId=\(deviceId ?? "nil"), connRunning=\(conn.running), connFd=\(conn.fd), reason=\(String(describing: reason)))")
         if let id = deviceId {
             connectingDeviceIds.remove(id)
             lastHeartbeatSent.removeValue(forKey: id)
 
-            // Track TLS failures for backoff — if this connection never completed TLS,
-            // it was a handshake failure (phone locked/Dozing, cert issue, etc.)
-            if !conn.tlsEstablished {
-                let prev = consecutiveTLSFailures[id] ?? 0
-                consecutiveTLSFailures[id] = prev + 1
-                KLog.log("[Link] TLS failure #\(prev + 1) for \(deviceName)")
-            } else {
-                consecutiveTLSFailures.removeValue(forKey: id)
+            // Only a real TLS handshake failure escalates the reconnect backoff (finding
+            // A2). A TCP/Tailscale timeout is a transport problem and must not slow down
+            // the LAN reconnect path. A finalized session that ended clears the counter.
+            // `conn.tlsEstablished` is already reset by cleanupSSL() here, so use the
+            // finalized-device set as the "session was healthy" marker.
+            var policy = reconnectPolicies[id] ?? ReconnectPolicy()
+            switch reason {
+            case .tlsFailure:
+                policy.recordTLSFailure()
+                reconnectPolicies[id] = policy
+                KLog.log("[Link] TLS failure #\(policy.tlsFailures) for \(deviceName) — next reconnect in \(Int(policy.interval))s")
+            case .transportFailure:
+                policy.recordTransportFailure()
+                reconnectPolicies[id] = policy
+                KLog.log("[Link] Transport failure #\(policy.transportFailures) for \(deviceName) — backoff unchanged (\(Int(policy.interval))s)")
+            case .closed, .none:
+                if tlsEstablishedDeviceIds.contains(id) {
+                    reconnectPolicies.removeValue(forKey: id)
+                }
             }
 
             // Only tear down device state if THIS conn is still the active one.
@@ -921,7 +1000,9 @@ class DeviceManager: ObservableObject {
                         device.kdeConn = nil
                         device.batteryLevel = -1
                         device.batteryCharging = false
-                        self.updateDeviceState(device, to: .disconnected)
+                        if !self.hasLiveConnection(for: id, excluding: conn) {
+                            self.updateDeviceState(device, to: .disconnected)
+                        }
                         self.devices[id] = device
                         // Periodic broadcast is suppressed while a session is healthy, so
                         // re-announce now that it dropped; this is what nudges the peer
@@ -936,12 +1017,45 @@ class DeviceManager: ObservableObject {
             } else {
                 KLog.log("[Link] Stale disconnect for \(id) — replacement connection active, skipping state change")
             }
+
+            // A3: `.paired` is derived from the stored certificate, not from a socket.
+            // If the device ends up paired with no live connection and no in-flight
+            // attempt, report it as disconnected instead of leaving a session that does
+            // not exist. Replacements and active dials keep `.paired` (no flapping).
+            if let device = devices[id], device.connectionState == .paired,
+               !hasLiveConnection(for: id, excluding: conn),
+               !hasInFlightAttempt(for: id) {
+                KLog.log("[Link] \(deviceName) left .paired with no live session — marking disconnected")
+                updateDeviceState(device, to: .disconnected)
+            }
         }
         // Clean up temp keys
         for (key, c) in connections where c === conn {
             connections.removeValue(forKey: key)
         }
+        // Keep the "Connect by IP" panel honest: a live direct session that ends must not
+        // keep the green checkmark. Attempts report their own failure; this covers the
+        // "already connected" path where no attempt was registered.
+        if case .connected(let statusHost, _) = directConnectStatus,
+           !connections.values.contains(where: { $0.host == statusHost && $0.running }) {
+            directConnectTracker.clearStatus(host: statusHost)
+            syncDirectConnectStatus()
+        }
         KLog.log("[Link] Disconnected from \(deviceId ?? "unknown")")
+    }
+
+    /// True while another connection (not `conn`) to `deviceId` is running.
+    private func hasLiveConnection(for deviceId: String, excluding conn: KDEConnection) -> Bool {
+        connections.values.contains { $0 !== conn && $0.remoteDeviceId == deviceId && $0.running }
+    }
+
+    /// True while reconnect logic is actively trying to reach `deviceId` anyway.
+    private func hasInFlightAttempt(for deviceId: String) -> Bool {
+        if connectingDeviceIds.contains(deviceId) { return true }
+        if connections.values.contains(where: { $0.remoteDeviceId == deviceId && $0.running }) { return true }
+        let tailscaleIP = Config.shared.tailscaleIP
+        if !tailscaleIP.isEmpty && directConnectTracker.isConnecting(host: tailscaleIP) { return true }
+        return false
     }
 
     // MARK: - Packet Handling
@@ -1390,6 +1504,6 @@ class DeviceManager: ObservableObject {
 
     func connectToDirectIP(_ ip: String) {
         guard !ip.isEmpty else { return }
-        connectDirectToHost(host: ip, port: Config.defaultPort)
+        connectDirectToHost(host: ip, port: directConnectTargetPort(for: ip))
     }
 }

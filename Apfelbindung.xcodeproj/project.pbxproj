@@ -21,6 +21,9 @@
 		A10000000000000000000015 /* CertificateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* CertificateManager.swift */; };
 		A10000000000000000000016 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* Logger.swift */; };
 		A10000000000000000000017 /* NotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* NotificationStore.swift */; };
+		A10000000000000000000018 /* DirectConnectTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* DirectConnectTracker.swift */; };
+		A10000000000000000000019 /* ReconnectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* ReconnectPolicy.swift */; };
+		A1000000000000000000001A /* KeepAliveProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* KeepAliveProfile.swift */; };
 		A10000000000000000000020 /* UDPDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* UDPDiscovery.swift */; };
 		A10000000000000000000021 /* LanServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* LanServer.swift */; };
 		A10000000000000000000022 /* KDEConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* KDEConnection.swift */; };
@@ -55,6 +58,9 @@
 		B10000000000000000000015 /* CertificateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificateManager.swift; sourceTree = "<group>"; };
 		B10000000000000000000016 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
 		B10000000000000000000017 /* NotificationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000018 /* DirectConnectTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectConnectTracker.swift; sourceTree = "<group>"; };
+		B10000000000000000000019 /* ReconnectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicy.swift; sourceTree = "<group>"; };
+		B1000000000000000000001A /* KeepAliveProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeepAliveProfile.swift; sourceTree = "<group>"; };
 		B10000000000000000000020 /* UDPDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UDPDiscovery.swift; sourceTree = "<group>"; };
 		B10000000000000000000021 /* LanServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanServer.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* KDEConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KDEConnection.swift; sourceTree = "<group>"; };
@@ -134,6 +140,9 @@
 				B10000000000000000000015 /* CertificateManager.swift */,
 				B10000000000000000000016 /* Logger.swift */,
 				B10000000000000000000017 /* NotificationStore.swift */,
+				B10000000000000000000018 /* DirectConnectTracker.swift */,
+				B10000000000000000000019 /* ReconnectPolicy.swift */,
+				B1000000000000000000001A /* KeepAliveProfile.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -257,6 +266,9 @@
 				A10000000000000000000015 /* CertificateManager.swift in Sources */,
 				A10000000000000000000016 /* Logger.swift in Sources */,
 				A10000000000000000000017 /* NotificationStore.swift in Sources */,
+				A10000000000000000000018 /* DirectConnectTracker.swift in Sources */,
+				A10000000000000000000019 /* ReconnectPolicy.swift in Sources */,
+				A1000000000000000000001A /* KeepAliveProfile.swift in Sources */,
 				A10000000000000000000020 /* UDPDiscovery.swift in Sources */,
 				A10000000000000000000021 /* LanServer.swift in Sources */,
 				A10000000000000000000022 /* KDEConnection.swift in Sources */,
