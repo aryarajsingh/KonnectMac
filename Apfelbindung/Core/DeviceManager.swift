@@ -570,9 +570,16 @@ class DeviceManager: ObservableObject {
             }
         }
 
-        // A newer dial to the same host supersedes an older attempt; don't stack sockets.
+        // Don't stack sockets. A user click while a background probe is in flight
+        // promotes that attempt (the click must never be silenced); an automatic
+        // broadcast just skips.
         if directConnectTracker.isConnecting(host: host) {
-            KLog.log("[DirectConnect] Skipped \(host) — attempt already in progress")
+            if announcesFailure && directConnectTracker.promoteCurrent(host: host) {
+                KLog.log("[DirectConnect] Promoted in-flight attempt to \(host) to user-initiated")
+                syncDirectConnectStatus()
+            } else {
+                KLog.log("[DirectConnect] Skipped \(host) — attempt already in progress")
+            }
             return
         }
 

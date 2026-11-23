@@ -27,9 +27,11 @@ struct DirectConnectAttempt: Equatable {
     let host: String
     let port: UInt16
     /// True for attempts the user asked for ("Connect" button). Background probes
-    /// (periodic tailnet dials) don't paint the manual panel red when they fail,
-    /// unless they had actually connected and the live session dropped.
-    let announcesFailure: Bool
+    /// (periodic tailnet dials) don't publish `Connecting` and don't paint the manual
+    /// panel red when they fail, unless they had actually connected and the live
+    /// session dropped. A click while a probe is in flight promotes it (see
+    /// `DirectConnectTracker.promoteCurrent`), so this flag must be mutable.
+    var announcesFailure: Bool
 
     /// Key used by `DeviceManager.connections` while the attempt is in flight.
     ///
@@ -54,7 +56,9 @@ final class DirectConnectTracker {
             case connected
         }
 
-        let attempt: DirectConnectAttempt
+        // Mutable: `promoteCurrent` flips `announcesFailure` on the stored copy, while
+        // callers keep an immutable pre-promotion snapshot.
+        var attempt: DirectConnectAttempt
         var phase: Phase
     }
 
@@ -68,12 +72,32 @@ final class DirectConnectTracker {
 
     /// Registers a new attempt. Returns the attempt token the caller must pass to
     /// `isCurrent`, `markConnected`, `markFailed`, `cleanupTimeout` and `finish`.
+    ///
+    /// A user-initiated attempt takes over the panel immediately. A background probe
+    /// leaves `status` untouched, so it neither flashes `Connecting` nor erases a
+    /// previous `Failed`/`Connected` state (A6 refinement).
     func begin(host: String, port: UInt16, announcesFailure: Bool = true) -> DirectConnectAttempt {
         let attempt = DirectConnectAttempt(id: UUID(), host: host, port: port, announcesFailure: announcesFailure)
         entries[attempt.key] = Entry(attempt: attempt, phase: .connecting)
         currentByHost[host] = attempt.id
-        status = .connecting(host: host)
+        if announcesFailure {
+            status = .connecting(host: host)
+        }
         return attempt
+    }
+
+    /// Promotes the handshaking attempt for `host` to user-initiated after a click:
+    /// publishes `.connecting` and makes its eventual failure visible. Returns false
+    /// when there is no in-flight attempt to promote.
+    @discardableResult
+    func promoteCurrent(host: String) -> Bool {
+        guard let id = currentByHost[host],
+              let key = entries.first(where: { $0.value.attempt.id == id && $0.value.phase == .connecting })?.key else {
+            return false
+        }
+        entries[key]?.attempt.announcesFailure = true
+        status = .connecting(host: host)
+        return true
     }
 
     /// True while `attempt` is still the current attempt for its host.
@@ -98,18 +122,19 @@ final class DirectConnectTracker {
     }
 
     /// Marks the attempt as failed and forgets it. A stale attempt is discarded
-    /// without touching the published status. Background probes that never connected
-    /// return the panel to idle instead of showing a failure the user didn't trigger.
+    /// without touching the published status. A background probe that never connected
+    /// leaves the panel untouched (idle, or a previous Failed/Connected state); a
+    /// promoted probe or a connection that had been live reports `Failed`.
     @discardableResult
     func markFailed(_ attempt: DirectConnectAttempt) -> Bool {
         guard let entry = entries[attempt.key], entry.attempt.id == attempt.id else { return false }
         entries.removeValue(forKey: attempt.key)
         guard currentByHost[attempt.host] == attempt.id else { return false }
         currentByHost.removeValue(forKey: attempt.host)
-        if attempt.announcesFailure || entry.phase == .connected {
+        // Read the stored flag: a probe promoted by a later click must report failure,
+        // even though the caller holds the pre-promotion attempt copy.
+        if entry.attempt.announcesFailure || entry.phase == .connected {
             status = .failed(host: attempt.host)
-        } else {
-            status = .idle
         }
         return true
     }
@@ -118,10 +143,17 @@ final class DirectConnectTracker {
     /// the timeout may clean up, and only while it is still handshaking.
     @discardableResult
     func cleanupTimeout(_ attempt: DirectConnectAttempt) -> DirectConnectCleanup {
-        guard isCurrent(attempt), entries[attempt.key]?.phase == .connecting else { return .ignore }
+        // `isCurrent` also verifies that this attempt still owns its host: a timeout from
+        // a superseded in-flight attempt must not remove the newer attempt's slot (A1).
+        guard let entry = entries[attempt.key], isCurrent(attempt), entry.phase == .connecting else {
+            return .ignore
+        }
         entries.removeValue(forKey: attempt.key)
         currentByHost.removeValue(forKey: attempt.host)
-        status = attempt.announcesFailure ? .failed(host: attempt.host) : .idle
+        // A silent probe timeout leaves the panel as-is; a promoted one reports failure.
+        if entry.attempt.announcesFailure {
+            status = .failed(host: attempt.host)
+        }
         return .disconnect
     }
 

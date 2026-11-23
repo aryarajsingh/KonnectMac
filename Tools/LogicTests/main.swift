@@ -47,6 +47,15 @@ private func testStaleAttemptTimeout() {
     check("T1 attempt B is still current", tracker.isCurrent(attemptB))
     check("T1 attempt B is still connecting", tracker.isConnecting(host: "100.104.247.78"))
     checkEqual("T1 status still reports B connecting", tracker.status, .connecting(host: "100.104.247.78"))
+
+    // A newer attempt supersedes A while A is still handshaking; A's identity timeout
+    // must not remove B's slot nor change the published state either.
+    let superseded = DirectConnectTracker()
+    let first = superseded.begin(host: "100.104.247.80", port: 1716)
+    let second = superseded.begin(host: "100.104.247.80", port: 1716)
+    checkEqual("T1 timeout of a superseded in-flight attempt is ignored", superseded.cleanupTimeout(first), .ignore)
+    check("T1 the newer in-flight attempt is still current", superseded.isCurrent(second))
+    checkEqual("T1 status still reports the newer attempt", superseded.status, .connecting(host: "100.104.247.80"))
 }
 
 // MARK: - T2 (A2): only real TLS failures escalate the reconnect backoff
@@ -145,17 +154,72 @@ private func testDirectConnectStatus() {
     checkEqual("T5 timeout cleanup → failed", tracker.status, .failed(host: "192.168.1.9"))
     checkEqual("T5 a second timeout on the same attempt is ignored", tracker.cleanupTimeout(attemptC), .ignore)
 
-    // A background tailnet probe the user never triggered must not paint the manual
-    // panel red. A probe that had connected still reports failure when the session dies.
-    let autoTracker = DirectConnectTracker()
-    let probe = autoTracker.begin(host: "100.64.0.9", port: 1716, announcesFailure: false)
-    _ = autoTracker.markFailed(probe)
-    checkEqual("T5 failed background probe returns to idle", autoTracker.status, .idle)
+    // A background tailnet probe the user never triggered must not publish Connecting,
+    // must not paint the manual panel red, and must not erase a previous state.
+    let silent = DirectConnectTracker()
+    let probe = silent.begin(host: "100.64.0.9", port: 1716, announcesFailure: false)
+    checkEqual("T5 silent probe does not publish connecting", silent.status, .idle)
+    _ = silent.markFailed(probe)
+    checkEqual("T5 failed silent probe keeps idle", silent.status, .idle)
 
-    let connectedProbe = autoTracker.begin(host: "100.64.0.9", port: 1716, announcesFailure: false)
-    _ = autoTracker.markConnected(connectedProbe, deviceName: "Pixel")
-    _ = autoTracker.markFailed(connectedProbe)
-    checkEqual("T5 a dropped live probe still reports failure", autoTracker.status, .failed(host: "100.64.0.9"))
+    // A probe that actually connects may publish Connected...
+    let silentConnected = DirectConnectTracker()
+    let connectProbe = silentConnected.begin(host: "100.64.0.10", port: 1716, announcesFailure: false)
+    checkEqual("T5 silent probe begin keeps idle", silentConnected.status, .idle)
+    _ = silentConnected.markConnected(connectProbe, deviceName: "Pixel")
+    checkEqual("T5 silent probe that connects → connected", silentConnected.status, .connected(host: "100.64.0.10", deviceName: "Pixel"))
+    // ...and its later drop is a real failure.
+    _ = silentConnected.markFailed(connectProbe)
+    checkEqual("T5 a dropped live probe still reports failure", silentConnected.status, .failed(host: "100.64.0.10"))
+
+    // A silent probe must never erase an existing Failed state.
+    let preserveFailed = DirectConnectTracker()
+    let manualFailure = preserveFailed.begin(host: "100.64.0.11", port: 1716)
+    _ = preserveFailed.markFailed(manualFailure)
+    checkEqual("T5 manual failure → failed", preserveFailed.status, .failed(host: "100.64.0.11"))
+    let lateProbe = preserveFailed.begin(host: "100.64.0.11", port: 1716, announcesFailure: false)
+    checkEqual("T5 silent probe keeps the previous failure", preserveFailed.status, .failed(host: "100.64.0.11"))
+    _ = preserveFailed.markFailed(lateProbe)
+    checkEqual("T5 silent probe failure does not erase failed", preserveFailed.status, .failed(host: "100.64.0.11"))
+
+    // A silent probe must never erase an existing Connected state.
+    let preserveConnected = DirectConnectTracker()
+    let liveAttempt = preserveConnected.begin(host: "100.64.0.12", port: 1716)
+    _ = preserveConnected.markConnected(liveAttempt, deviceName: "Pixel")
+    let overlappingProbe = preserveConnected.begin(host: "100.64.0.12", port: 1716, announcesFailure: false)
+    checkEqual("T5 silent probe keeps the previous connection", preserveConnected.status, .connected(host: "100.64.0.12", deviceName: "Pixel"))
+    _ = preserveConnected.markFailed(overlappingProbe)
+    checkEqual("T5 silent probe failure keeps connected", preserveConnected.status, .connected(host: "100.64.0.12", deviceName: "Pixel"))
+
+    // Promotion: a click while a probe is in flight must never be silenced.
+    let promotion = DirectConnectTracker()
+    let promotedProbe = promotion.begin(host: "100.64.0.13", port: 1716, announcesFailure: false)
+    checkEqual("T5 probe in flight keeps idle", promotion.status, .idle)
+    check("T5 promotion succeeds", promotion.promoteCurrent(host: "100.64.0.13"))
+    checkEqual("T5 promoted probe → connecting", promotion.status, .connecting(host: "100.64.0.13"))
+    // The closure still holds the pre-promotion copy (announcesFailure == false);
+    // the tracker must read the stored, promoted flag.
+    _ = promotion.markFailed(promotedProbe)
+    checkEqual("T5 promoted probe failure → failed", promotion.status, .failed(host: "100.64.0.13"))
+
+    // Promotion + identity timeout must also report failure.
+    let promotedTimeout = DirectConnectTracker()
+    let timeoutProbe = promotedTimeout.begin(host: "100.64.0.14", port: 1716, announcesFailure: false)
+    _ = promotedTimeout.promoteCurrent(host: "100.64.0.14")
+    checkEqual("T5 promoted timeout → disconnect", promotedTimeout.cleanupTimeout(timeoutProbe), .disconnect)
+    checkEqual("T5 promoted timeout → failed", promotedTimeout.status, .failed(host: "100.64.0.14"))
+
+    // Promotion with nothing in flight is a no-op and must not fake a Connecting state.
+    let empty = DirectConnectTracker()
+    check("T5 promotion without an attempt fails", !empty.promoteCurrent(host: "100.64.0.15"))
+    checkEqual("T5 promotion without an attempt keeps idle", empty.status, .idle)
+
+    // A connected attempt is not "in flight": a click must not demote it to Connecting.
+    let alreadyConnected = DirectConnectTracker()
+    let connectedAttempt = alreadyConnected.begin(host: "100.64.0.16", port: 1716)
+    _ = alreadyConnected.markConnected(connectedAttempt, deviceName: "Pixel")
+    check("T5 connected attempt cannot be promoted", !alreadyConnected.promoteCurrent(host: "100.64.0.16"))
+    checkEqual("T5 connected state survives a click", alreadyConnected.status, .connected(host: "100.64.0.16", deviceName: "Pixel"))
 }
 
 // MARK: - Run
