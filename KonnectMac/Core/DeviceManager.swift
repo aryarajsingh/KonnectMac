@@ -133,7 +133,9 @@ class DeviceManager: ObservableObject {
 
         let deviceName = packet.body["deviceName"]?.value as? String ?? "Unknown"
         let deviceType = packet.body["deviceType"]?.value as? String ?? "phone"
-        let tcpPort = packet.body["tcpPort"]?.value as? Int ?? Int(Config.minPort)
+        // AnyCodable decodes JSON integers as Int64, and `as? Int` fails on a boxed Int64,
+        // so read the port through asPort(). Fall back to the protocol's default port.
+        let tcpPort = Int(packet.body["tcpPort"]?.asPort() ?? Config.defaultPort)
 
         // Check if already connected or being connected.
         // Don't require conn.running — an incoming connection may not be running yet
@@ -183,12 +185,14 @@ class DeviceManager: ObservableObject {
         //   This applies for SAME host AND SAME device on different host (WiFi vs Tailscale)
         // - Unpaired + running → accept (phone is still discovering, may have replaced its socket)
         // - Not running → accept (connection is dead)
+        //
+        // Only the host can be compared here: the incoming device's ID isn't known until its
+        // identity packet arrives. The same-device check (WiFi vs Tailscale) runs in
+        // onIdentityReceived below. Matching on device ID here closed connections from every
+        // other device whenever any paired device was connected.
 
         for (key, conn) in connections {
-            // Match by host (same network path) OR by device ID (same device, different network)
-            let sameHost = conn.host == host
-            let sameDevice = conn.remoteDeviceId != nil && tlsEstablishedDeviceIds.contains(conn.remoteDeviceId!)
-            guard sameHost || sameDevice else { continue }
+            guard conn.host == host else { continue }
 
             let deviceId = conn.remoteDeviceId
             let hasPendingPair = deviceId.map { pendingPairRequests.contains($0) } ?? false
@@ -238,6 +242,21 @@ class DeviceManager: ObservableObject {
 
             let deviceName = packet.body["deviceName"]?.value as? String ?? "Unknown"
             let deviceType = packet.body["deviceType"]?.value as? String ?? "phone"
+
+            // Same device already connected over another path (WiFi vs Tailscale) and paired:
+            // keep the existing connection, as the host check above does for the same host.
+            // Rejected before remoteDeviceId is set, so handleDisconnection can't touch the
+            // existing connection's state.
+            if let existingConn = self.connections[deviceId], existingConn !== conn,
+               existingConn.running,
+               self.tlsEstablishedDeviceIds.contains(deviceId),
+               self.devices[deviceId]?.connectionState == .paired,
+               !self.pendingPairRequests.contains(deviceId) {
+                KLog.log("[TCP] \(deviceName) already connected via \(existingConn.host), rejecting incoming from \(host)")
+                self.connections.removeValue(forKey: tempKey)
+                conn.disconnect()
+                return
+            }
 
             conn.remoteDeviceId = deviceId
 
