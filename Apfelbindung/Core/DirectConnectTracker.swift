@@ -164,6 +164,16 @@ final class DirectConnectTracker {
         status = .connected(host: host, deviceName: deviceName)
     }
 
+    /// Publishes a live link finalized through discovery/outgoing/incoming.
+    ///
+    /// Unlike `noteConnected`, it does NOT clear attempt bookkeeping: a direct attempt
+    /// that reached this connection must still report `Failed` if the session drops.
+    /// This is what keeps the Connect-by-IP panel from showing a stale `Failed` while a
+    /// session is alive (A6).
+    func publishConnected(host: String, deviceName: String) {
+        status = .connected(host: host, deviceName: deviceName)
+    }
+
     /// Ends an attempt successfully without changing the published status (used when
     /// the new connection is discarded because a live one already exists).
     func finish(_ attempt: DirectConnectAttempt) {

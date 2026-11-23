@@ -214,6 +214,34 @@ private func testDirectConnectStatus() {
     check("T5 promotion without an attempt fails", !empty.promoteCurrent(host: "100.64.0.15"))
     checkEqual("T5 promotion without an attempt keeps idle", empty.status, .idle)
 
+    // A live link finalized through discovery/outgoing must clear a previous Failed for
+    // the configured host without erasing a direct attempt's failure bookkeeping.
+    let recovered = DirectConnectTracker()
+    let failedProbe = recovered.begin(host: "100.64.0.17", port: 1716)
+    _ = recovered.markFailed(failedProbe)
+    checkEqual("T5 failure before the live link", recovered.status, .failed(host: "100.64.0.17"))
+    recovered.noteConnected(host: "100.64.0.17", deviceName: "Pixel")
+    checkEqual("T5 noteConnected clears Failed", recovered.status, .connected(host: "100.64.0.17", deviceName: "Pixel"))
+
+    let liveLink = DirectConnectTracker()
+    let failedTailnet = liveLink.begin(host: "100.64.0.18", port: 1716)
+    _ = liveLink.markFailed(failedTailnet)
+    liveLink.publishConnected(host: "192.168.8.1", deviceName: "Pixel")
+    checkEqual("T5 a live link on another route replaces Failed", liveLink.status, .connected(host: "192.168.8.1", deviceName: "Pixel"))
+
+    let tracked = DirectConnectTracker()
+    let trackedAttempt = tracked.begin(host: "100.64.0.19", port: 1716)
+    tracked.publishConnected(host: "100.64.0.19", deviceName: "Pixel")
+    _ = tracked.markFailed(trackedAttempt)
+    checkEqual("T5 publishConnected keeps the attempt failure reporting", tracked.status, .failed(host: "100.64.0.19"))
+
+    let cleared = DirectConnectTracker()
+    let lastLink = cleared.begin(host: "100.64.0.20", port: 1716)
+    cleared.publishConnected(host: "100.64.0.20", deviceName: "Pixel")
+    _ = lastLink
+    cleared.clearStatus(host: "100.64.0.20")
+    checkEqual("T5 last connection drop clears to idle", cleared.status, .idle)
+
     // A connected attempt is not "in flight": a click must not demote it to Connecting.
     let alreadyConnected = DirectConnectTracker()
     let connectedAttempt = alreadyConnected.begin(host: "100.64.0.16", port: 1716)

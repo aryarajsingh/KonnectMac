@@ -223,7 +223,12 @@ class DeviceManager: ObservableObject {
 
     /// True while a paired phone has a live, TLS-established connection on any route.
     private var hasLivePairedPhoneConnection: Bool {
-        connections.values.contains { conn in
+        livePairedPhoneConnection != nil
+    }
+
+    /// The live, TLS-established connection to a paired phone, if any.
+    private var livePairedPhoneConnection: KDEConnection? {
+        connections.values.first { conn in
             guard conn.running, conn.tlsEstablished, let deviceId = conn.remoteDeviceId else { return false }
             guard let device = devices[deviceId] else { return false }
             return device.type == "phone" && Config.shared.isPaired(deviceId: deviceId)
@@ -786,6 +791,11 @@ class DeviceManager: ObservableObject {
                 }
             }
             self.updateDeviceState(device, to: .paired)
+            // A finalized link of any route proves the phone is reachable. Publish it so
+            // the Connect-by-IP panel never keeps a stale Failed (A6). Keeps the direct
+            // attempt entry so its later drop can still report Failed.
+            directConnectTracker.publishConnected(host: conn.host, deviceName: device.name)
+            syncDirectConnectStatus()
             initializePlugins(for: device)
             let batteryRequest = NetworkPacket(type: "kdeconnect.battery.request", body: ["request": AnyCodable(true)])
             device.send(batteryRequest)
@@ -1040,12 +1050,31 @@ class DeviceManager: ObservableObject {
         for (key, c) in connections where c === conn {
             connections.removeValue(forKey: key)
         }
-        // Keep the "Connect by IP" panel honest: a live direct session that ends must not
-        // keep the green checkmark. Attempts report their own failure; this covers the
-        // "already connected" path where no attempt was registered.
+        // Keep the "Connect by IP" panel honest (A6):
+        // - a connected state follows the live route, and clears to idle when the last
+        //   connection falls;
+        // - a Failed for the *configured* direct IP never sticks while the phone is
+        //   reachable through any route. Manual failures for other IPs remain visible.
+        let liveConnection = livePairedPhoneConnection
         if case .connected(let statusHost, _) = directConnectStatus,
            !connections.values.contains(where: { $0.host == statusHost && $0.running }) {
-            directConnectTracker.clearStatus(host: statusHost)
+            if let liveConnection, let deviceId = liveConnection.remoteDeviceId {
+                directConnectTracker.publishConnected(
+                    host: liveConnection.host,
+                    deviceName: devices[deviceId]?.name ?? deviceId
+                )
+            } else {
+                directConnectTracker.clearStatus(host: statusHost)
+            }
+            syncDirectConnectStatus()
+        }
+        if case .failed(let failedHost) = directConnectStatus,
+           failedHost == Config.shared.tailscaleIP,
+           let liveConnection, let deviceId = liveConnection.remoteDeviceId {
+            directConnectTracker.publishConnected(
+                host: liveConnection.host,
+                deviceName: devices[deviceId]?.name ?? deviceId
+            )
             syncDirectConnectStatus()
         }
         KLog.log("[Link] Disconnected from \(deviceId ?? "unknown")")
